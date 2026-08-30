@@ -1,0 +1,308 @@
+[
+    {
+        "timestamp": 0.0,
+        "frame": 1,
+        "latitude_deg": 37.7749,
+        "longitude_deg": -122.4193318100723,
+        "altitude_m": 61.5,
+        "num_satellites": 14,
+        "hdop": 0.98
+    },
+    {
+        "timestamp": 0.2,
+        "frame": 7,
+        "latitude_deg": 37.77492854246901,
+        "longitude_deg": -122.41934309919077,
+        "altitude_m": 62.1974778175354,
+        "num_satellites": 13,
+        "hdop": 0.96
+    },
+    {
+        "timestamp": 0.4,
+        "frame": 13,
+        "latitude_deg": 37.77494656620146,
+        "longitude_deg": -122.41937227765517,
+        "altitude_m": 62.83956694602966,
+        "num_satellites": 14,
+        "hdop": 0.86
+    },
+    {
+        "timestamp": 0.6,
+        "frame": 19,
+        "latitude_deg": 37.77494835627227,
+        "longitude_deg": -122.41940772853803,
+        "altitude_m": 63.37527775764465,
+        "num_satellites": 12,
+        "hdop": 0.97
+    },
+    {
+        "timestamp": 0.8,
+        "frame": 25,
+        "latitude_deg": 37.774935042803975,
+        "longitude_deg": -122.4194366764554,
+        "altitude_m": 63.762067556381226,
+        "num_satellites": 14,
+        "hdop": 0.96
+    },
+    {
+        "timestamp": 1.0,
+        "frame": 31,
+        "latitude_deg": 37.774913021919296,
+        "longitude_deg": -122.41945070364379,
+        "altitude_m": 63.969220876693726,
+        "num_satellites": 12,
+        "hdop": 0.96
+    },
+    {
+        "timestamp": 1.2,
+        "frame": 37,
+        "latitude_deg": 37.77489025392135,
+        "longitude_deg": -122.4194480229583,
+        "altitude_m": 63.980286836624146,
+        "num_satellites": 12,
+        "hdop": 0.86
+    },
+    {
+        "timestamp": 1.4,
+        "frame": 43,
+        "latitude_deg": 37.77487299625667,
+        "longitude_deg": -122.419432081797,
+        "altitude_m": 63.79438662528992,
+        "num_satellites": 13,
+        "hdop": 0.86
+    },
+    {
+        "timestamp": 1.6,
+        "frame": 49,
+        "latitude_deg": 37.7748646342736,
+        "longitude_deg": -122.41940853513763,
+        "altitude_m": 63.42628312110901,
+        "num_satellites": 14,
+        "hdop": 0.89
+    },
+    {
+        "timestamp": 1.8,
+        "frame": 55,
+        "latitude_deg": 37.77486632829975,
+        "longitude_deg": -122.41938313363613,
+        "altitude_m": 62.905208349227905,
+        "num_satellites": 12,
+        "hdop": 0.9
+    },
+    {
+        "timestamp": 2.0,
+        "frame": 61,
+        "latitude_deg": 37.77487787091944,
+        "longitude_deg": -122.4193614661405,
+        "altitude_m": 62.27254247665405,
+        "num_satellites": 13,
+        "hdop": 1.0
+    },
+    {
+        "timestamp": 2.2,
+        "frame": 67,
+        "latitude_deg": 37.774897481952735,
+        "longitude_deg": -122.41934936483925,
+        "altitude_m": 61.578526854515076,
+        "num_satellites": 13,
+        "hdop": 0.96
+    },
+    {
+        "timestamp": 2.4,
+        "frame": 73,
+        "latitude_deg": 37.774920827410256,
+        "longitude_deg": -122.41935207009561,
+        "altitude_m": 60.87827527523041,
+        "num_satellites": 14,
+        "hdop": 1.0
+    },
+    {
+        "timestamp": 2.6,
+        "frame": 79,
+        "latitude_deg": 37.77494083504836,
+        "longitude_deg": -122.41937159844178,
+        "altitude_m": 60.227396458387375,
+        "num_satellites": 13,
+        "hdop": 0.84
+    },
+    {
+        "timestamp": 2.8,
+        "frame": 85,
+        "latitude_deg": 37.77494963105075,
+        "longitude_deg": -122.41940395044082,
+        "altitude_m": 59.677578419446945,
+        "num_satellites": 14,
+        "hdop": 0.92
+    },
+    {
+        "timestamp": 3.0,
+        "frame": 91,
+        "latitude_deg": 37.7749422171671,
+        "longitude_deg": -122.4194388052338,
+        "altitude_m": 59.272483706474304,
+        "num_satellites": 12,
+        "hdop": 0.81
+    },
+    {
+        "timestamp": 3.2,
+        "frame": 97,
+        "latitude_deg": 37.77491973762119,
+        "longitude_deg": -122.41946306941522,
+        "altitude_m": 59.04428189992905,
+        "num_satellites": 13,
+        "hdop": 0.9
+    },
+    {
+        "timestamp": 3.4,
+        "frame": 103,
+        "latitude_deg": 37.77488991362289,
+        "longitude_deg": -122.41946689406613,
+        "altitude_m": 59.011095106601715,
+        "num_satellites": 12,
+        "hdop": 0.89
+    },
+    {
+        "timestamp": 3.6,
+        "frame": 109,
+        "latitude_deg": 37.774863864290715,
+        "longitude_deg": -122.41944868355387,
+        "altitude_m": 59.1755588054657,
+        "num_satellites": 14,
+        "hdop": 0.93
+    },
+    {
+        "timestamp": 3.8,
+        "frame": 115,
+        "latitude_deg": 37.774850949166606,
+        "longitude_deg": -122.41941593337654,
+        "altitude_m": 59.524612456560135,
+        "num_satellites": 14,
+        "hdop": 0.9
+    },
+    {
+        "timestamp": 4.0,
+        "frame": 121,
+        "latitude_deg": 37.7748546424869,
+        "longitude_deg": -122.41938135486805,
+        "altitude_m": 60.03053686954081,
+        "num_satellites": 12,
+        "hdop": 0.85
+    },
+    {
+        "timestamp": 4.2,
+        "frame": 127,
+        "latitude_deg": 37.7748717291585,
+        "longitude_deg": -122.41935676547888,
+        "altitude_m": 60.65315520763397,
+        "num_satellites": 13,
+        "hdop": 0.8
+    },
+    {
+        "timestamp": 4.4,
+        "frame": 133,
+        "latitude_deg": 37.774894849941845,
+        "longitude_deg": -122.41934842396014,
+        "altitude_m": 61.34302365779877,
+        "num_satellites": 12,
+        "hdop": 0.94
+    },
+    {
+        "timestamp": 4.6,
+        "frame": 139,
+        "latitude_deg": 37.774916336013746,
+        "longitude_deg": -122.41935607949685,
+        "altitude_m": 62.045358180999756,
+        "num_satellites": 12,
+        "hdop": 0.84
+    },
+    {
+        "timestamp": 4.8,
+        "frame": 145,
+        "latitude_deg": 37.77493087153277,
+        "longitude_deg": -122.41937521370107,
+        "altitude_m": 62.704384088516235,
+        "num_satellites": 14,
+        "hdop": 0.8
+    },
+    {
+        "timestamp": 5.0,
+        "frame": 151,
+        "latitude_deg": 37.77493593261137,
+        "longitude_deg": -122.4194,
+        "altitude_m": 63.26776695251465,
+        "num_satellites": 13,
+        "hdop": 0.97
+    },
+    {
+        "timestamp": 5.2,
+        "frame": 157,
+        "latitude_deg": 37.77493087153277,
+        "longitude_deg": -122.41942478629892,
+        "altitude_m": 63.69076681137085,
+        "num_satellites": 13,
+        "hdop": 0.85
+    },
+    {
+        "timestamp": 5.4,
+        "frame": 163,
+        "latitude_deg": 37.774916336013746,
+        "longitude_deg": -122.41944392050314,
+        "altitude_m": 63.9397919178009,
+        "num_satellites": 12,
+        "hdop": 0.98
+    },
+    {
+        "timestamp": 5.6,
+        "frame": 169,
+        "latitude_deg": 37.774894849941845,
+        "longitude_deg": -122.41945157603985,
+        "altitude_m": 63.99506688117981,
+        "num_satellites": 12,
+        "hdop": 0.97
+    },
+    {
+        "timestamp": 5.8,
+        "frame": 175,
+        "latitude_deg": 37.7748717291585,
+        "longitude_deg": -122.41944323452111,
+        "altitude_m": 63.85220193862915,
+        "num_satellites": 13,
+        "hdop": 0.93
+    },
+    {
+        "timestamp": 6.0,
+        "frame": 181,
+        "latitude_deg": 37.7748546424869,
+        "longitude_deg": -122.41941864513194,
+        "altitude_m": 63.52254247665405,
+        "num_satellites": 12,
+        "hdop": 0.82
+    },
+    {
+        "timestamp": 6.2,
+        "frame": 187,
+        "latitude_deg": 37.774850949166606,
+        "longitude_deg": -122.41938406662345,
+        "altitude_m": 63.032267570495605,
+        "num_satellites": 14,
+        "hdop": 0.91
+    },
+    {
+        "timestamp": 6.4,
+        "frame": 193,
+        "latitude_deg": 37.774863864290715,
+        "longitude_deg": -122.41935131644613,
+        "altitude_m": 62.42031145095825,
+        "num_satellites": 14,
+        "hdop": 0.97
+    },
+    {
+        "timestamp": 6.6,
+        "frame": 199,
+        "latitude_deg": 37.77488991362289,
+        "longitude_deg": -122.41933310593386,
+        "altitude_m": 61.735270738601685,
+        "num_satellites": 13,
+        "hdop": 0.87
+    }
+]

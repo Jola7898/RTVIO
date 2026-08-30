@@ -1,0 +1,178 @@
+import bpy
+import math
+import json
+import os
+import numpy as np
+from mathutils import Vector, Matrix
+
+BLEND_DIR = bpy.path.abspath("//")          
+FRAMES_DIR = os.path.join(BLEND_DIR, "mug_dataset")   
+OUTPUT_DIR = FRAMES_DIR   
+
+TOTAL_FRAMES = 200
+TARGET_NAME = "Mug"
+CAM_NAME = "Camera"
+
+FOCAL_LENGTH_MM = 35.0
+BASE_RADIUS = 5.0
+MIN_HEIGHT = -1.0
+MAX_HEIGHT = 4.0
+FPS = 30.0
+
+GRAVITY = 9.81
+GPS_RATE_DIVIDER = 6            
+GPS_REF_LAT_DEG = 37.7749       
+GPS_REF_LON_DEG = -122.4194
+GPS_REF_ALT_M = 30.0
+EARTH_RADIUS_M = 6378137.0
+
+rng = np.random.default_rng(7)
+os.makedirs(FRAMES_DIR, exist_ok=True)   
+
+scene = bpy.context.scene
+cam_obj = bpy.data.objects.get(CAM_NAME)
+target_obj = bpy.data.objects.get(TARGET_NAME)
+
+if not target_obj:
+    raise NameError(f"Target object '{TARGET_NAME}' not found in the scene!")
+if not cam_obj:
+    raise NameError(f"Camera object '{CAM_NAME}' not found in the scene!")
+
+cam_obj.data.lens = FOCAL_LENGTH_MM
+cam_obj.data.clip_start = 0.01
+cam_obj.data.clip_end = 100.0
+
+scene.frame_start = 1
+scene.frame_end = TOTAL_FRAMES
+scene.render.fps = int(FPS)
+
+track_constraint = None
+for constraint in cam_obj.constraints:
+    if constraint.type == 'TRACK_TO':
+        track_constraint = constraint
+        break
+
+if not track_constraint:
+    track_constraint = cam_obj.constraints.new(type='TRACK_TO')
+
+track_constraint.target = target_obj
+track_constraint.track_axis = 'TRACK_NEGATIVE_Z'
+track_constraint.up_axis = 'UP_Y'
+
+def get_camera_intrinsics(cam_data, scene):
+    render = scene.render
+    width = render.resolution_x
+    height = render.resolution_y
+    focal_length_mm = cam_data.lens
+    sensor_width_mm = cam_data.sensor_width
+
+    fx = (focal_length_mm / sensor_width_mm) * width
+    fy = fx
+    cx = width / 2.0
+    cy = height / 2.0
+    return fx, fy, cx, cy, width, height
+
+def enu_to_latlon(dx, dy, dz, ref_lat_deg, ref_lon_deg, ref_alt_m):
+    ref_lat_rad = math.radians(ref_lat_deg)
+    dlat_deg = (dy / EARTH_RADIUS_M) * (180.0 / math.pi)
+    dlon_deg = (dx / (EARTH_RADIUS_M * math.cos(ref_lat_rad))) * (180.0 / math.pi)
+    return ref_lat_deg + dlat_deg, ref_lon_deg + dlon_deg, ref_alt_m + dz
+
+fx, fy, cx, cy, img_w, img_h = get_camera_intrinsics(cam_obj.data, scene)
+
+with open(os.path.join(BLEND_DIR, "camera_intrinsics.json"), 'w') as f:
+    json.dump({"fx": fx, "fy": fy, "cx": cx, "cy": cy,
+               "width": img_w, "height": img_h}, f, indent=4)
+
+imu_data = []
+gps_data = []
+target_center = target_obj.location
+
+dt = 1.0 / FPS
+prev_pos = None
+prev_vel = Vector((0, 0, 0))
+prev_R = None
+
+gravity_world = Vector((0.0, 0.0, -GRAVITY))
+
+for frame in range(1, TOTAL_FRAMES + 1):
+    scene.frame_set(frame)
+    timestamp = (frame - 1) * dt
+    progress = (frame - 1) / float(TOTAL_FRAMES)
+
+    azimuth = progress * 2.0 * math.pi * 3.0
+    elevation_factor = 0.5 * (1.0 + math.sin(progress * 2.0 * math.pi * 1.5))
+
+    cam_z = target_center.z + MIN_HEIGHT + elevation_factor * (MAX_HEIGHT - MIN_HEIGHT)
+    current_radius = BASE_RADIUS + 1.0 * math.cos(progress * 4.0 * math.pi)
+
+    cam_x = target_center.x + current_radius * math.cos(azimuth)
+    cam_y = target_center.y + current_radius * math.sin(azimuth)
+
+    cam_obj.location = (cam_x, cam_y, cam_z)
+    bpy.context.view_layer.update()
+
+    curr_pos = Vector(cam_obj.location)
+    curr_R = cam_obj.matrix_world.to_3x3()
+
+    if prev_pos is not None:
+        velocity_world = (curr_pos - prev_pos) / dt
+        accel_world = (velocity_world - prev_vel) / dt
+    else:
+        velocity_world = Vector((0, 0, 0))
+        accel_world = Vector((0, 0, 0))
+
+    if prev_R is not None:
+        R_rel = prev_R.transposed() @ curr_R
+        rel_quat = R_rel.to_quaternion()
+        axis, angle = rel_quat.to_axis_angle()
+        true_gyro_body = axis * (angle / dt)
+    else:
+        true_gyro_body = Vector((0.0, 0.0, 0.0))
+
+    specific_force_world = accel_world - gravity_world
+    true_accel_body = curr_R.transposed() @ specific_force_world
+
+    accel_meas = np.array(true_accel_body[:])
+    gyro_meas = np.array(true_gyro_body[:])
+
+    prev_pos = curr_pos
+    prev_vel = velocity_world
+    prev_R = curr_R
+
+    imu_data.append({
+        "timestamp": timestamp,
+        "frame": frame,
+        "accel_body_xyz": accel_meas.tolist(),          
+        "gyro_body_xyz": gyro_meas.tolist(),             
+    })
+
+    if (frame - 1) % GPS_RATE_DIVIDER == 0:
+        dx = curr_pos.x - target_center.x
+        dy = curr_pos.y - target_center.y
+        dz = curr_pos.z - target_center.z
+        lat, lon, alt = enu_to_latlon(
+            dx, dy, GPS_REF_ALT_M + dz,
+            GPS_REF_LAT_DEG, GPS_REF_LON_DEG, GPS_REF_ALT_M
+        )
+        gps_data.append({
+            "timestamp": timestamp,
+            "frame": frame,
+            "latitude_deg": lat,
+            "longitude_deg": lon,
+            "altitude_m": alt,
+            "num_satellites": int(rng.integers(12, 15)),
+            "hdop": round(float(rng.uniform(0.8, 1.0)), 2),
+        })
+
+    scene.render.filepath = os.path.join(OUTPUT_DIR, f"frame_{frame:04d}.png")
+    bpy.ops.render.render(write_still=True)
+
+with open(os.path.join(BLEND_DIR, "imu_data.json"), 'w') as f:
+    json.dump(imu_data, f, indent=4)
+
+with open(os.path.join(BLEND_DIR, "gps_data.json"), 'w') as f:
+    json.dump(gps_data, f, indent=4)
+
+print(f"Frames stored in:   {FRAMES_DIR}")
+print(f"JSON sensor logs in: {BLEND_DIR}")
