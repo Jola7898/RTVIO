@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="brand">#1B6FE3</color>
+    <color name="brand_dark">#0B4EA8</color>
+    <color name="stop_red">#C62828</color>
+    <color name="overlay_scrim">#99000000</color>
+    <color name="status_ok">#2E7D32</color>
+    <color name="status_warn">#EF6C00</color>
+    <color name="status_error">#C62828</color>
+    <color name="overlay_text">#FFFFFFFF</color>
+</resources>

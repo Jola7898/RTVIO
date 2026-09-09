@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Notification icons are drawn as a mask, so this is a solid white silhouette:
+     concentric broadcast arcs radiating from a dot. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFFFF">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M12,10m-2,0a2,2 0,1 1,4 0a2,2 0,1 1,-4 0" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M8.46,6.46 L7.05,5.05C5.78,6.32 5,8.07 5,10s0.78,3.68 2.05,4.95l1.41,-1.41C7.56,12.63 7,11.38 7,10S7.56,7.37 8.46,6.46z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M16.95,5.05 L15.54,6.46C16.44,7.37 17,8.62 17,10s-0.56,2.63 -1.46,3.54l1.41,1.41C18.22,13.68 19,11.93 19,10S18.22,6.32 16.95,5.05z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M11,13h2l1.5,7h-5z" />
+</vector>

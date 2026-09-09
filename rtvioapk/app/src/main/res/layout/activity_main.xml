@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical">
+
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="?attr/actionBarSize"
+            android:background="?attr/colorSurface"
+            app:title="@string/app_name" />
+
+        <!-- Camera preview with its overlays -->
+        <FrameLayout
+            android:id="@+id/previewContainer"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:background="#000000">
+
+            <androidx.camera.view.PreviewView
+                android:id="@+id/previewView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:contentDescription="@string/cd_preview"
+                app:implementationMode="performance"
+                app:scaleType="fitCenter" />
+
+            <TextView
+                android:id="@+id/overlayFps"
+                style="@style/PreviewOverlay"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|start"
+                android:layout_margin="8dp"
+                android:visibility="gone"
+                tools:text="29.8 fps"
+                tools:visibility="visible" />
+
+            <TextView
+                android:id="@+id/overlayGps"
+                style="@style/PreviewOverlay"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|end"
+                android:layout_margin="8dp"
+                android:visibility="gone"
+                tools:text="GPS 3.2 m"
+                tools:visibility="visible" />
+
+            <!-- Angular-rate indicator: fast rotation is the main cause of
+                 motion blur, so the operator gets direct feedback on it. -->
+            <TextView
+                android:id="@+id/overlayStability"
+                style="@style/PreviewOverlay"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|start"
+                android:layout_margin="8dp"
+                android:visibility="gone"
+                tools:text="steady"
+                tools:visibility="visible" />
+
+            <TextView
+                android:id="@+id/overlayWifiLost"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center"
+                android:background="@color/status_error"
+                android:gravity="center"
+                android:padding="12dp"
+                android:text="@string/overlay_wifi_lost"
+                android:textColor="@color/overlay_text"
+                android:textStyle="bold"
+                android:visibility="gone"
+                tools:visibility="visible" />
+        </FrameLayout>
+
+        <!-- Status panel -->
+        <com.google.android.material.card.MaterialCardView
+            android:id="@+id/statusCard"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_margin="8dp"
+            app:cardCornerRadius="12dp"
+            app:cardElevation="2dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:padding="12dp">
+
+                <LinearLayout
+                    android:id="@+id/statusHeader"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:background="?attr/selectableItemBackground"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="@string/status_panel_title"
+                        android:textAppearance="?attr/textAppearanceTitleSmall" />
+
+                    <TextView
+                        android:id="@+id/statusState"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:fontFamily="monospace"
+                        android:text="@string/state_disconnected"
+                        android:textStyle="bold"
+                        tools:textColor="@color/status_ok" />
+
+                    <TextView
+                        android:id="@+id/statusChevron"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:paddingStart="12dp"
+                        android:paddingEnd="0dp"
+                        android:text="▾"
+                        android:textSize="16sp" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/statusBody"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:paddingTop="8dp">
+
+                    <include
+                        android:id="@+id/rowServer"
+                        layout="@layout/item_status_row" />
+
+                    <include
+                        android:id="@+id/rowFps"
+                        layout="@layout/item_status_row" />
+
+                    <include
+                        android:id="@+id/rowLatency"
+                        layout="@layout/item_status_row" />
+
+                    <include
+                        android:id="@+id/rowBandwidth"
+                        layout="@layout/item_status_row" />
+
+                    <include
+                        android:id="@+id/rowBuffer"
+                        layout="@layout/item_status_row" />
+
+                    <include
+                        android:id="@+id/rowMode"
+                        layout="@layout/item_status_row" />
+
+                    <include
+                        android:id="@+id/rowFrames"
+                        layout="@layout/item_status_row" />
+
+                    <include
+                        android:id="@+id/rowImu"
+                        layout="@layout/item_status_row" />
+
+                    <include
+                        android:id="@+id/rowBattery"
+                        layout="@layout/item_status_row" />
+
+                    <TextView
+                        android:id="@+id/statusDetail"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:paddingTop="6dp"
+                        android:textSize="12sp"
+                        android:textColor="?android:attr/textColorSecondary"
+                        tools:text="connected, protocol v1" />
+                </LinearLayout>
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Controls -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingStart="8dp"
+            android:paddingEnd="8dp"
+            android:paddingBottom="12dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnStream"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="2"
+                android:text="@string/action_start" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnSettings"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="1"
+                android:text="@string/action_settings" />
+        </LinearLayout>
+    </LinearLayout>
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

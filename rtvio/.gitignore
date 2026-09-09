@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local config / secrets
+.env
+*.local.json
+
+# Data: reconstruction outputs and captured calibration frames are runtime
+# artifacts, not source - regenerate them by running the pipeline / capture
+# tool rather than tracking them in git. camera_intrinsics.json IS tracked
+# (it's the required fallback default, not an output).
+data/outputs/
+data/calib_frames/*
+!data/calib_frames/.gitkeep
+
+# Test/tool artifacts
+*.las
+*.bak

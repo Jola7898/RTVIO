@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory android:title="@string/cat_connection">
+
+        <EditTextPreference
+            android:key="server_ip"
+            android:title="@string/pref_server_ip"
+            android:summary="@string/pref_server_ip_summary"
+            android:dialogTitle="@string/pref_server_ip"
+            app:useSimpleSummaryProvider="false" />
+
+        <EditTextPreference
+            android:key="server_port"
+            android:title="@string/pref_server_port"
+            android:defaultValue="5555"
+            android:dialogTitle="@string/pref_server_port"
+            app:useSimpleSummaryProvider="true" />
+
+        <Preference
+            android:key="discover"
+            android:title="@string/pref_discover"
+            android:summary="@string/pref_discover_summary" />
+
+        <Preference
+            android:key="test_connection"
+            android:title="@string/pref_test"
+            android:summary="@string/pref_test_summary" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="@string/cat_video">
+
+        <ListPreference
+            android:key="video_resolution"
+            android:title="@string/pref_resolution"
+            android:entries="@array/resolution_entries"
+            android:entryValues="@array/resolution_values"
+            android:defaultValue="1080p"
+            app:useSimpleSummaryProvider="true" />
+
+        <ListPreference
+            android:key="video_fps"
+            android:title="@string/pref_fps"
+            android:entries="@array/fps_entries"
+            android:entryValues="@array/fps_values"
+            android:defaultValue="30"
+            app:useSimpleSummaryProvider="true" />
+
+        <SeekBarPreference
+            android:key="jpeg_quality"
+            android:title="@string/pref_quality"
+            android:defaultValue="70"
+            android:min="30"
+            android:max="90"
+            app:seekBarIncrement="5"
+            app:showSeekBarValue="true"
+            app:updatesContinuously="false" />
+
+        <Preference
+            android:key="bandwidth_estimate"
+            android:title="@string/pref_bandwidth_title"
+            android:selectable="false" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="@string/cat_sensors">
+
+        <ListPreference
+            android:key="imu_rate_hz"
+            android:title="@string/pref_imu_rate"
+            android:entries="@array/imu_rate_entries"
+            android:entryValues="@array/imu_rate_values"
+            android:defaultValue="100"
+            app:useSimpleSummaryProvider="true" />
+
+        <ListPreference
+            android:key="imu_batch_ms"
+            android:title="@string/pref_imu_batch"
+            android:entries="@array/imu_batch_entries"
+            android:entryValues="@array/imu_batch_values"
+            android:defaultValue="50"
+            app:useSimpleSummaryProvider="true" />
+
+        <SwitchPreferenceCompat
+            android:key="outdoor_mode"
+            android:title="@string/pref_mode"
+            android:defaultValue="true"
+            android:summaryOn="@string/pref_mode_on"
+            android:summaryOff="@string/pref_mode_off" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="@string/cat_reliability">
+
+        <SwitchPreferenceCompat
+            android:key="auto_reconnect"
+            android:title="@string/pref_auto_reconnect"
+            android:summary="@string/pref_auto_reconnect_summary"
+            android:defaultValue="true" />
+
+        <EditTextPreference
+            android:key="reconnect_interval"
+            android:title="@string/pref_reconnect_interval"
+            android:defaultValue="5"
+            android:dependency="auto_reconnect"
+            android:dialogTitle="@string/pref_reconnect_interval"
+            app:useSimpleSummaryProvider="true" />
+
+        <SwitchPreferenceCompat
+            android:key="keep_awake"
+            android:title="@string/pref_keep_awake"
+            android:summary="@string/pref_keep_awake_summary"
+            android:defaultValue="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory android:title="@string/cat_display">
+
+        <SwitchPreferenceCompat
+            android:key="show_fps_overlay"
+            android:title="@string/pref_fps_overlay"
+            android:defaultValue="true" />
+
+        <SwitchPreferenceCompat
+            android:key="show_stats"
+            android:title="@string/pref_show_stats"
+            android:summary="@string/pref_show_stats_summary"
+            android:defaultValue="true" />
+
+        <SwitchPreferenceCompat
+            android:key="haptics"
+            android:title="@string/pref_haptics"
+            android:summary="@string/pref_haptics_summary"
+            android:defaultValue="true" />
+    </PreferenceCategory>
+</PreferenceScreen>

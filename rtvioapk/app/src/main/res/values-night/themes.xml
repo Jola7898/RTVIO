@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Material3 DayNight already swaps the palette; only the accent needs
+         lifting so it keeps contrast against a dark surface. -->
+    <style name="Theme.RtvioMapper" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#7FB0F5</item>
+        <item name="colorPrimaryDark">@color/brand_dark</item>
+        <item name="android:statusBarColor">?attr/colorSurface</item>
+    </style>
+</resources>

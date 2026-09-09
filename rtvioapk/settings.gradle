@@ -1,0 +1,25 @@
+pluginManagement {
+    repositories {
+        google {
+            // Restrict the Google repo to the groups it actually serves, so a
+            // typo'd coordinate fails fast instead of after a slow 404 sweep.
+            content {
+                includeGroupByRegex("com\\.android.*")
+                includeGroupByRegex("com\\.google.*")
+                includeGroupByRegex("androidx.*")
+            }
+        }
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "RTVIOMapper"
+include ':app'

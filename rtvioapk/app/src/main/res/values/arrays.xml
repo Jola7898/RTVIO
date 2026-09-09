@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string-array name="resolution_entries">
+        <item>720p  (1280 x 720)</item>
+        <item>1080p (1920 x 1080)</item>
+    </string-array>
+    <string-array name="resolution_values">
+        <item>720p</item>
+        <item>1080p</item>
+    </string-array>
+
+    <string-array name="fps_entries">
+        <item>15 fps</item>
+        <item>24 fps</item>
+        <item>30 fps</item>
+    </string-array>
+    <string-array name="fps_values">
+        <item>15</item>
+        <item>24</item>
+        <item>30</item>
+    </string-array>
+
+    <string-array name="imu_rate_entries">
+        <item>50 Hz</item>
+        <item>100 Hz</item>
+        <item>200 Hz</item>
+    </string-array>
+    <string-array name="imu_rate_values">
+        <item>50</item>
+        <item>100</item>
+        <item>200</item>
+    </string-array>
+
+    <string-array name="imu_batch_entries">
+        <item>Every 20 ms</item>
+        <item>Every 50 ms</item>
+        <item>Every 100 ms</item>
+    </string-array>
+    <string-array name="imu_batch_values">
+        <item>20</item>
+        <item>50</item>
+        <item>100</item>
+    </string-array>
+</resources>

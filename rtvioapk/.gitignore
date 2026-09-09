@@ -1,0 +1,21 @@
+*.iml
+.gradle/
+__pycache__/
+*.pyc
+local.properties
+.idea/
+.DS_Store
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.keystore
+keystore.properties
+
+# transient build output
+build_log.txt
+
+# recorded phone-stream sessions (large binary captures, regenerate by running
+# tools/mock_receiver.py or the app against a live pipeline)
+session_out/
