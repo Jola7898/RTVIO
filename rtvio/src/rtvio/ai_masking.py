@@ -14,12 +14,24 @@ except ImportError:
 
 class DynamicMasker:
     """
-    AI-enabled dynamic object masking using YOLOv8-seg.
+    AI-enabled dynamic object masking using YOLO.
     Identifies dynamic classes (people, vehicles, animals) and returns a binary
     mask where dynamic objects are False (to be ignored) and the static background
     is True.
+
+    Two model/class-list presets (session 2+3 finding - see
+    HANDOFF_SESSION2.md/3.md): stock COCO-trained yolov8n-seg (this class's
+    default, unchanged) detects essentially NOTHING on nadir (straight-down)
+    drone footage - confirmed on a real frame with 3 visible parked cars, 0
+    detections at any confidence/resolution tested. A car viewed from
+    directly overhead looks nothing like COCO's side/oblique training
+    images. For nadir footage, use `DynamicMasker.for_nadir_aerial()`
+    instead, which loads a YOLOv8 checkpoint fine-tuned on VisDrone (aerial
+    imagery, vehicle/pedestrian classes seen from above) - confirmed on the
+    same test frame to actually detect the cars (0.86/0.83/0.79 confidence
+    at imgsz=1280, vs. 0 for stock COCO at any setting).
     """
-    # COCO classes for dynamic objects
+    # COCO classes for dynamic objects (ground-level/oblique footage)
     DYNAMIC_CLASSES = {
         0,   # person
         1,   # bicycle
@@ -42,9 +54,25 @@ class DynamicMasker:
         23,  # giraffe
     }
 
-    def __init__(self, model_size='yolov8n-seg.pt'):
+    # VisDrone's own class list is entirely moving/dynamic object types
+    # (pedestrian, people, bicycle, car, van, truck, tricycle,
+    # awning-tricycle, bus, motor) - unlike COCO there's no "keep this
+    # class, it's part of the static scene" subset to carve out, so every
+    # class index is dynamic.
+    VISDRONE_DYNAMIC_CLASSES = set(range(10))
+    _VISDRONE_HF_REPO = "Mahadih534/YoloV8-VisDrone"
+    _VISDRONE_HF_FILE = "visDrone.pt"
+
+    def __init__(self, model_size='yolov8n-seg.pt', dynamic_classes=None, imgsz=None):
         self.enabled = YOLO is not None
         self.model = None
+        self.dynamic_classes = dynamic_classes if dynamic_classes is not None else self.DYNAMIC_CLASSES
+        # Stock COCO models default to ultralytics' own imgsz=640. The
+        # VisDrone checkpoint's detections on a 3840x2160 nadir frame went
+        # from 2 boxes at 640 to 8 at 1280 (confirmed - see
+        # HANDOFF_SESSION3.md) since cars are small in a wide aerial frame;
+        # for_nadir_aerial() below sets this to 1280 by default.
+        self.imgsz = imgsz
         if self.enabled:
             try:
                 # Same convention as vggt_reconstruct._load_vggt: resolve to a
@@ -54,7 +82,10 @@ class DynamicMasker:
                 # depending on where the script was launched from).
                 if not os.path.isabs(model_size) and os.sep not in model_size and "/" not in model_size:
                     models_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "models")
-                    model_size = os.path.abspath(os.path.join(models_dir, model_size))
+                    resolved = os.path.abspath(os.path.join(models_dir, model_size))
+                    if model_size == self._VISDRONE_HF_FILE and not os.path.exists(resolved):
+                        self._download_visdrone(models_dir)
+                    model_size = resolved
                 # 'n' is the nano model for near real-time performance.
                 self.model = YOLO(model_size)
             except Exception as e:
@@ -63,10 +94,27 @@ class DynamicMasker:
         else:
             print("Warning: 'ultralytics' not installed. Dynamic object masking disabled.")
 
+    @classmethod
+    def for_nadir_aerial(cls):
+        """DynamicMasker preset for straight-down drone footage - see the
+        class docstring. Downloads the VisDrone checkpoint to data/models/
+        on first use (like vggt_reconstruct's VGGT checkpoint, but via
+        huggingface_hub since this one's small enough - ~6MB nano-sized -
+        that a slow/flaky network isn't the concern the 5GB VGGT checkpoint
+        had)."""
+        return cls(model_size=cls._VISDRONE_HF_FILE,
+                    dynamic_classes=cls.VISDRONE_DYNAMIC_CLASSES, imgsz=1280)
+
+    def _download_visdrone(self, models_dir):
+        from huggingface_hub import hf_hub_download
+        print("downloading VisDrone-trained YOLOv8 checkpoint (%s) to %s ..."
+              % (self._VISDRONE_HF_REPO, models_dir))
+        hf_hub_download(self._VISDRONE_HF_REPO, self._VISDRONE_HF_FILE, local_dir=models_dir)
+
     def get_static_mask(self, image_bgr):
         """
-        Takes a BGR image and returns a boolean numpy array of the same 
-        (height, width) where True means static background and False means 
+        Takes a BGR image and returns a boolean numpy array of the same
+        (height, width) where True means static background and False means
         dynamic object.
         """
         h, w = image_bgr.shape[:2]
@@ -77,8 +125,11 @@ class DynamicMasker:
             return mask
 
         # Run inference. verbose=False keeps the console clean during live stream
-        results = self.model(image_bgr, verbose=False, classes=list(self.DYNAMIC_CLASSES))
-        
+        kwargs = {"verbose": False, "classes": list(self.dynamic_classes)}
+        if self.imgsz is not None:
+            kwargs["imgsz"] = self.imgsz
+        results = self.model(image_bgr, **kwargs)
+
         if len(results) > 0:
             result = results[0]
             # If segmentation masks are available

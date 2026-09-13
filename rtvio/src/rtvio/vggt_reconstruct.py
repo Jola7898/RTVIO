@@ -453,7 +453,7 @@ def export_colmap(out_dir, colmap_frames, pts, cols):
 
 def reconstruct(video_path, gps_path, out_dir, ref_lat=None, ref_lon=None, ref_alt=None,
                  window_frames=WINDOW_FRAMES, overlap=WINDOW_OVERLAP, sample_fps=SAMPLE_FPS,
-                 use_masking=True, cell_size_m=1.0, voxel_size_m=0.3):
+                 use_masking=True, cell_size_m=1.0, voxel_size_m=0.3, masking_preset="coco"):
     """Batch reconstruction from a video file + optional GPS CSV. See
     reconstruct_from_recording just below for the phone-session (rtvioapk /
     stream.recorder.SessionRecorder) equivalent - both funnel into
@@ -471,7 +471,8 @@ def reconstruct(video_path, gps_path, out_dir, ref_lat=None, ref_lon=None, ref_a
 
     return _reconstruct_core(frame_paths, frame_times, gps_track, out_dir,
                               ref_lat, ref_lon, ref_alt, window_frames, overlap,
-                              use_masking, cell_size_m, voxel_size_m, t_start)
+                              use_masking, cell_size_m, voxel_size_m, t_start,
+                              masking_preset=masking_preset)
 
 
 def load_gps_track_from_recording(session_dir):
@@ -495,7 +496,8 @@ def load_gps_track_from_recording(session_dir):
 
 def reconstruct_from_recording(session_dir, out_dir, ref_lat=None, ref_lon=None, ref_alt=None,
                                 window_frames=WINDOW_FRAMES, overlap=WINDOW_OVERLAP,
-                                use_masking=True, cell_size_m=1.0, voxel_size_m=0.3):
+                                use_masking=True, cell_size_m=1.0, voxel_size_m=0.3,
+                                masking_preset="coco"):
     """Batch VGGT reconstruction from a phone-recorded session fixture (see
     stream/recorder.py's SessionRecorder, and live_pipeline.py's --record-only)
     instead of a video file.
@@ -519,7 +521,8 @@ def reconstruct_from_recording(session_dir, out_dir, ref_lat=None, ref_lon=None,
     os.makedirs(out_dir, exist_ok=True)
     return _reconstruct_core(frame_paths, frame_times, gps_track, out_dir,
                               ref_lat, ref_lon, ref_alt, window_frames, overlap,
-                              use_masking, cell_size_m, voxel_size_m, t_start)
+                              use_masking, cell_size_m, voxel_size_m, t_start,
+                              masking_preset=masking_preset)
 
 
 def _load_recording_frames(session_dir):
@@ -551,7 +554,8 @@ def _load_recording_frames(session_dir):
 
 
 def _reconstruct_core(frame_paths, frame_times, gps_track, out_dir, ref_lat, ref_lon, ref_alt,
-                       window_frames, overlap, use_masking, cell_size_m, voxel_size_m, t_start):
+                       window_frames, overlap, use_masking, cell_size_m, voxel_size_m, t_start,
+                       masking_preset="coco"):
     """The shared body of reconstruct()/reconstruct_from_recording(), from
     just after frame/GPS loading onward: windowing, VGGT, georeferencing,
     merging, export. Agnostic to whether frame_paths/frame_times/gps_track
@@ -585,7 +589,13 @@ def _reconstruct_core(frame_paths, frame_times, gps_track, out_dir, ref_lat, ref
     dtype = torch.bfloat16 if device == "cuda" and torch.cuda.get_device_capability()[0] >= 8 else torch.float16
     print("device=%s dtype=%s" % (device, dtype))
     model = _load_vggt(device, dtype)
-    masker = DynamicMasker() if use_masking else None
+    masker = None
+    if use_masking:
+        # coco (default): stock ground-level/oblique detector, unchanged.
+        # nadir_aerial: VisDrone-trained checkpoint for straight-down drone
+        # footage, where coco detects nothing at all - see
+        # DynamicMasker's class docstring and HANDOFF_SESSION2.md/3.md.
+        masker = DynamicMasker.for_nadir_aerial() if masking_preset == "nadir_aerial" else DynamicMasker()
 
     step = window_frames - overlap
     assert step > 0, "WINDOW_OVERLAP must be < window_frames"
@@ -597,6 +607,7 @@ def _reconstruct_core(frame_paths, frame_times, gps_track, out_dir, ref_lat, ref
     colmap_frames = {}  # absolute frame idx -> dict(path, R_cam_to_world, C, K) - see export_colmap
 
     win_starts = list(range(0, len(frame_paths), step))
+    window_seconds = []  # per-window wall time - see PERFORMANCE_BENCHMARK.md
     for wi, start in enumerate(win_starts):
         end = min(start + window_frames, len(frame_paths))
         if end - start < 2:
@@ -606,7 +617,9 @@ def _reconstruct_core(frame_paths, frame_times, gps_track, out_dir, ref_lat, ref
         w_gps = gps_enu[start:end]
 
         print("window %d/%d: frames [%d:%d]" % (wi + 1, len(win_starts), start, end))
+        _w_t0 = time.monotonic()
         cam_c, cam_R, pts, cols, intrin, imgs_hwc = run_window(model, device, dtype, w_paths, masker)
+        window_seconds.append(time.monotonic() - _w_t0)
 
         if not georeferenced:
             # RELATIVE MODE, no GPS: chain this window onto the previous
@@ -733,17 +746,19 @@ def _reconstruct_core(frame_paths, frame_times, gps_track, out_dir, ref_lat, ref
     cell_size_eff = cell_size_m if georeferenced else max(
         float((raw_pts.max(axis=0) - raw_pts.min(axis=0)).max()) / 300.0, 1e-6)
 
+    video_span_s = (frame_times[-1] - frame_times[0]) if len(frame_times) > 1 else 0.0
     _write_outputs(out_dir, pts, cols, ref_lat, ref_lon, ref_alt, cell_size_eff,
                     traj_t, traj_vggt, traj_gps, align_residuals,
                     wall_s=time.monotonic() - t_start, n_frames=len(frame_paths),
-                    georeferenced=georeferenced)
+                    georeferenced=georeferenced, window_seconds=window_seconds,
+                    video_span_s=video_span_s)
     export_colmap(out_dir, colmap_frames, pts, cols)
     return pts, cols
 
 
 def _write_outputs(out_dir, pts, cols, ref_lat, ref_lon, ref_alt, cell_size_m,
                     traj_t, traj_vggt, traj_gps, align_residuals, wall_s, n_frames,
-                    georeferenced=True):
+                    georeferenced=True, window_seconds=None, video_span_s=0.0):
     """Everything the Day-1/Day-2 plan checkpoints ask for: the point
     cloud/mesh itself, plus the verification artifacts (trajectory plot,
     alignment residuals, timing) so results can be checked, not just
@@ -771,6 +786,23 @@ def _write_outputs(out_dir, pts, cols, ref_lat, ref_lon, ref_alt, cell_size_m,
 
     _write_trajectory_plot(out_dir, traj_t, traj_vggt, traj_gps)
 
+    # The old version of this line divided wall_s by a flat 900s regardless
+    # of how long the input actually was - meaningful only when the test
+    # clip happens to be ~10 minutes long, which none of this pipeline's
+    # real test clips have been (see PERFORMANCE_BENCHMARK.md). Scale by the
+    # input's own span instead, and project what a real 10-minute video
+    # would cost at the same per-window rate - that's the number SIH26158's
+    # <15min target is actually about.
+    if video_span_s > 0:
+        projected_10min_s = wall_s * (600.0 / video_span_s)
+        budget_line = ("Wall time: %.1f s for %.1f s of input video (%.2fx realtime). "
+                        "Projected for a 10-minute video at this rate: %.0f s "
+                        "(%.2fx SIH26158's 15-minute budget)"
+                        % (wall_s, video_span_s, video_span_s / wall_s if wall_s > 0 else 0.0,
+                           projected_10min_s, projected_10min_s / (15 * 60)))
+    else:
+        budget_line = "Wall time: %.1f s (input video span unknown, cannot project to 10min)" % wall_s
+
     report = [
         "# VGGT batch reconstruction - checkpoint report", "",
         "Georeferenced: %s" % ("YES (anchored to provided GPS)" if georeferenced else
@@ -779,8 +811,14 @@ def _write_outputs(out_dir, pts, cols, ref_lat, ref_lon, ref_alt, cell_size_m,
                                "placeholder, not real. Fine for checking reconstruction "
                                "quality, not for the SIH deliverable."),
         "Frames processed: %d" % n_frames,
-        "Wall time: %.1f s (%.2fx real time budget vs SIH26158's <15min/10min video target)"
-        % (wall_s, wall_s / (15 * 60)),
+        budget_line,
+    ]
+    if window_seconds:
+        report.append(
+            "Per-window time: min=%.1fs mean=%.1fs max=%.1fs (n=%d windows)"
+            % (min(window_seconds), sum(window_seconds) / len(window_seconds),
+               max(window_seconds), len(window_seconds)))
+    report += [
         "Merged cloud points: %d" % len(pts),
         "2.5D mesh: %d vertices, %d faces, %.1f%% cell completeness"
         % (mesh_info["n_vertices"], mesh_info["n_faces"], 100 * mesh_info["completeness"]),
@@ -874,6 +912,11 @@ def main():
                      help="--video only - a recording already has real per-frame "
                           "timestamps, nothing to resample")
     ap.add_argument("--no-masking", action="store_true", help="skip YOLO dynamic-object masking")
+    ap.add_argument("--masking-preset", choices=["coco", "nadir_aerial"], default="coco",
+                     help="coco (default): ground-level/oblique footage. nadir_aerial: "
+                          "straight-down drone footage, where coco detects nothing at all "
+                          "(see DynamicMasker's class docstring) - uses a VisDrone-trained "
+                          "checkpoint instead, downloaded to data/models/ on first use.")
     ap.add_argument("--cell-size-m", type=float, default=1.0)
     ap.add_argument("--voxel-size-m", type=float, default=0.3,
                      help="dense-cloud merge voxel size - shrink this for small/indoor "
@@ -883,7 +926,8 @@ def main():
     common = dict(
         ref_lat=args.ref_lat, ref_lon=args.ref_lon, ref_alt=args.ref_alt,
         window_frames=args.window_frames, overlap=args.overlap,
-        use_masking=not args.no_masking, cell_size_m=args.cell_size_m,
+        use_masking=not args.no_masking, masking_preset=args.masking_preset,
+        cell_size_m=args.cell_size_m,
         voxel_size_m=args.voxel_size_m,
     )
     if args.from_recording:

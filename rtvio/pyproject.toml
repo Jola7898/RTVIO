@@ -37,9 +37,13 @@ mesh = [
     "trimesh",
 ]
 # Dynamic-object masking (ai_masking.py) - already installed in this
-# environment; listed here so a fresh setup gets it too.
+# environment; listed here so a fresh setup gets it too. huggingface_hub is
+# for DynamicMasker.for_nadir_aerial()'s VisDrone checkpoint download (see
+# HANDOFF_SESSION3.md) - listed here too, not just under vggt, since someone
+# could install masking without vggt.
 masking = [
     "ultralytics",
+    "huggingface_hub",
 ]
 
 [project.scripts]

@@ -105,3 +105,107 @@ drone isn't required to test this path), then run
 the result. That confirms the real socket/app path behaves like the
 synthetic tests above - the one thing this session couldn't verify without
 your hardware.
+
+## Item 3: GPS-noise robustness test (DONE) - a real, important finding
+
+New `rtvio/tests/test_georeference_vggt.py` (6/6 passing, CPU-only, no GPU
+needed). Two things, since no committed test existed for
+`so3.umeyama_alignment` at all before this:
+
+1. **The regression test that should already have existed**: noiseless
+   synthetic GPS recovers the true scale/rotation/translation to ~1e-8 and
+   aligns points to sub-millimetre error. Confirms the math itself is
+   correct - this was previously only an ad hoc, uncommitted script (see
+   session 1's note).
+2. **A Monte-Carlo sweep of realistic GPS noise** (200 trials per setting)
+   against the pipeline's real per-window anchor count:
+
+   | window anchors | horiz. GPS sigma | mean pos. error | max pos. error | ≤1m target? |
+   |---|---|---|---|---|
+   | 4  | 0.0m | 0.000m | 0.000m | yes |
+   | 4  | 1.0m | 1.757m | 3.812m | **no** |
+   | 4  | 3.0m | 5.065m | 11.179m | no |
+   | 4  | 5.0m | 8.270m | 18.544m | no |
+   | 10 | 1.0m | 1.086m | 2.030m | **no (barely)** |
+   | 10 | 3.0m | 3.147m | 6.117m | no |
+   | 10 | 5.0m | 5.106m | 10.241m | no |
+
+**Finding**: with the pipeline's actual default window size
+(`WINDOW_FRAMES=4`, so ≤4 GPS anchors per window), even a very good
+consumer-GPS accuracy (1m 1-sigma) already produces ~1.76m mean position
+error after alignment - over SIH26158's ≤1m spatial-accuracy target (30%
+of the eval score, the single biggest criterion) before accounting for any
+other error source (VGGT's own depth/pose noise, GPS altitude bias, etc.).
+This is not a bug in `umeyama_alignment` - a least-squares fit cannot
+recover more precision than the noise in its input allows, and doubling
+the anchor count (10 vs. 4) only partially helps (1.09m vs. 1.76m mean at
+1m noise - consistent with error shrinking roughly like sigma/sqrt(N), not
+enough on its own to close a ~2x gap at realistic noise levels).
+
+**Not fixed this session** (this is a real engineering trade-off, not a
+quick patch):
+- **Strongest concrete lever**: RTK/PPK corrections, which SIH26158 already
+  lists as an OPTIONAL input. RTK-corrected GPS is typically centimetre-
+  level, which per the same sigma/sqrt(N) relationship would put the
+  ≤1m target well within reach even at n=4. Worth prioritizing if the
+  competition's provided dataset includes it.
+- Larger `WINDOW_FRAMES`/denser GPS sampling helps some (see n=10 above)
+  but doesn't fully close the gap on its own at consumer-GPS noise levels.
+- A global (not per-window) alignment fit using every GPS-tagged frame
+  across the whole flight would average out far more noise (n in the
+  hundreds, not 4-10) - NOT implemented or verified this session, since it
+  conflicts with the reason per-window fitting was chosen in the first
+  place (VGGT's own per-window scale/rotation isn't guaranteed consistent
+  across windows - see `rigid_from_pose_pair`'s docstring). Flagging as a
+  real idea, not a validated fix.
+
+## Item 4: Fix dynamic-object masking (DONE - found a working fix)
+
+Session 2 found stock `yolov8n-seg.pt` (COCO) detects zero dynamic objects
+on nadir drone footage. This session found and verified a real fix:
+
+**Found a working checkpoint**: [Mahadih534/YoloV8-VisDrone](https://huggingface.co/Mahadih534/YoloV8-VisDrone)
+on HuggingFace - a YOLOv8 detector fine-tuned on VisDrone (aerial-viewpoint
+imagery with `pedestrian/people/bicycle/car/van/truck/tricycle/
+awning-tricycle/bus/motor` classes). Tested directly against the same
+`frame_67.jpg` (3 visible parked cars) session 2 used:
+
+| model | imgsz | conf | detections on the 3 real cars |
+|---|---|---|---|
+| stock COCO yolov8n-seg | any tested (640-3840) | any tested (0.1-0.25) | **0** |
+| VisDrone yolov8 | 640 | 0.25 | 2 (conf 0.77, 0.39) |
+| VisDrone yolov8 | 1280 | 0.25 | up to 8 boxes, real cars at conf 0.53-0.86 |
+
+Visually confirmed via a before/after overlay
+(`rtvio/data/outputs/masking_test/nadir_aerial_mask_overlay.jpg`): red
+mask coverage now lands precisely on the parked cars, where session 2's
+equivalent overlay had none at all.
+
+**Wired into `ai_masking.DynamicMasker`**:
+- `DynamicMasker.for_nadir_aerial()` - new alternate constructor: loads the
+  VisDrone checkpoint (auto-downloaded to `data/models/` via
+  `huggingface_hub` on first use, same "fetch once, cache locally"
+  convention as the VGGT checkpoint), remaps `DYNAMIC_CLASSES` to
+  VisDrone's own taxonomy (all 10 classes are dynamic by construction -
+  unlike COCO there's no static subset to carve out), and sets
+  `imgsz=1280` (measured to matter - cars are small in a wide nadir frame;
+  640 caught only 2 of them, 1280 caught up to 8).
+- Stock `DynamicMasker()` (COCO) stays the default - unchanged behavior for
+  non-nadir footage, since this is genuinely a different use case, not a
+  strict upgrade (VisDrone's classes/weights are tuned for aerial angles
+  specifically).
+- `vggt_reconstruct.py`: new `masking_preset` parameter
+  (`"coco"` default / `"nadir_aerial"`), threaded through `reconstruct()`,
+  `reconstruct_from_recording()`, and the CLI (`--masking-preset
+  nadir_aerial`).
+
+**Files changed**: `rtvio/src/rtvio/ai_masking.py` (the fix),
+`rtvio/src/rtvio/vggt_reconstruct.py` (`masking_preset` plumbing),
+`rtvio/pyproject.toml` (`huggingface_hub` added to the `masking` extra).
+
+**Not done this session**: a full pipeline run with `masking_preset=
+"nadir_aerial"` end-to-end (the masker itself is verified directly against
+a real frame, which is what the original plan's Day-2 checkpoint actually
+asked for - "before/after showing the mask actually removing them" - but a
+full `reconstruct()` run with it enabled, to see the effect on final point
+count/cloud quality, would be a good follow-up given more GPU time).
