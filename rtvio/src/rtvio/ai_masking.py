@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import cv2
 
@@ -45,7 +47,14 @@ class DynamicMasker:
         self.model = None
         if self.enabled:
             try:
-                # Loads the YOLO segmentation model. 
+                # Same convention as vggt_reconstruct._load_vggt: resolve to a
+                # stable path under data/models/ instead of letting ultralytics
+                # download to whatever the process's CWD happens to be (which
+                # otherwise litters the repo root / rtvio/ with yolov8n-seg.pt
+                # depending on where the script was launched from).
+                if not os.path.isabs(model_size) and os.sep not in model_size and "/" not in model_size:
+                    models_dir = os.path.join(os.path.dirname(__file__), "..", "..", "data", "models")
+                    model_size = os.path.abspath(os.path.join(models_dir, model_size))
                 # 'n' is the nano model for near real-time performance.
                 self.model = YOLO(model_size)
             except Exception as e:
