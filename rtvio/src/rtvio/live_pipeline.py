@@ -90,6 +90,7 @@ from .meshing import build_grid, write_textured_mesh
 from .so3 import level_and_align_attitude
 from .stream.geodesy import latlon_to_enu, AltitudeSanity
 from .tracking import Tracker
+from .ai_masking import DynamicMasker
 
 # Attitude initialisation ----------------------------------------------------
 # Yaw is the one component neither the accelerometer nor a GPS position fix can
@@ -251,6 +252,8 @@ class LiveReconstructor:
         # the model is internally fine and in the wrong place.
         self.ref = None
         self.alt_sanity = AltitudeSanity()
+        
+        self.masker = DynamicMasker()
 
         self.initialized = False
         self._pending = []             # (kind, args) buffered until yaw is known

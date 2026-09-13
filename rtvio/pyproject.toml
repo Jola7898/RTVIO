@@ -19,9 +19,32 @@ dependencies = [
 dev = [
     "pytest",
 ]
+# VGGT batch-reconstruction core (see docs/dev_notes for the pivot away from
+# the removed EKF/tracker). torch/torchvision are installed separately with
+# a CUDA-matched index URL (see README), not through this extra, since the
+# right wheel depends on the machine's GPU/driver.
+vggt = [
+    "huggingface_hub",
+    "einops",
+    "safetensors",
+]
+# Meshing/export for the VGGT pipeline. open3d has no wheel for this
+# machine's Python (3.13 on Windows, verified against PyPI directly) -
+# pymeshlab wraps the same screened-Poisson reconstruction MeshLab/Open3D
+# both use, and trimesh handles glTF/GLB export, which pymeshlab doesn't.
+mesh = [
+    "pymeshlab",
+    "trimesh",
+]
+# Dynamic-object masking (ai_masking.py) - already installed in this
+# environment; listed here so a fresh setup gets it too.
+masking = [
+    "ultralytics",
+]
 
 [project.scripts]
 rtvio-live = "rtvio.live_pipeline:main"
+rtvio-reconstruct = "rtvio.vggt_reconstruct:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
