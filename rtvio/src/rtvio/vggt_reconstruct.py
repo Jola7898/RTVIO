@@ -454,6 +454,10 @@ def export_colmap(out_dir, colmap_frames, pts, cols):
 def reconstruct(video_path, gps_path, out_dir, ref_lat=None, ref_lon=None, ref_alt=None,
                  window_frames=WINDOW_FRAMES, overlap=WINDOW_OVERLAP, sample_fps=SAMPLE_FPS,
                  use_masking=True, cell_size_m=1.0, voxel_size_m=0.3):
+    """Batch reconstruction from a video file + optional GPS CSV. See
+    reconstruct_from_recording just below for the phone-session (rtvioapk /
+    stream.recorder.SessionRecorder) equivalent - both funnel into
+    _reconstruct_core, which doesn't care where frames/GPS came from."""
     os.makedirs(out_dir, exist_ok=True)
     frames_dir = os.path.join(out_dir, "frames")
     t_start = time.monotonic()
@@ -463,8 +467,95 @@ def reconstruct(video_path, gps_path, out_dir, ref_lat=None, ref_lon=None, ref_a
         raise RuntimeError("need at least 2 sampled frames, got %d" % len(frames))
     frame_paths = [p for p, _ in frames]
     frame_times = [t for _, t in frames]
-
     gps_track = load_gps_track(gps_path) if gps_path else []
+
+    return _reconstruct_core(frame_paths, frame_times, gps_track, out_dir,
+                              ref_lat, ref_lon, ref_alt, window_frames, overlap,
+                              use_masking, cell_size_m, voxel_size_m, t_start)
+
+
+def load_gps_track_from_recording(session_dir):
+    """Reads gps_data.json (written by stream.recorder.SessionRecorder) directly,
+    instead of round-tripping through load_gps_track's hand-made CSV format.
+    Field names differ (timestamp/latitude_deg/longitude_deg/altitude_m vs.
+    load_gps_track's timestamp_s/lat_deg/lon_deg/alt_m) but mean the same
+    thing - mapped here rather than making load_gps_track sniff two formats.
+    Returns [] (not an error) if the session has no GPS - same "fall back to
+    relative mode" contract as reconstruct()'s gps_path=None."""
+    path = os.path.join(session_dir, "gps_data.json")
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        rows = json.load(f)
+    out = [{"t": r["timestamp"], "lat": r["latitude_deg"],
+             "lon": r["longitude_deg"], "alt": r["altitude_m"]} for r in rows]
+    out.sort(key=lambda r: r["t"])
+    return out
+
+
+def reconstruct_from_recording(session_dir, out_dir, ref_lat=None, ref_lon=None, ref_alt=None,
+                                window_frames=WINDOW_FRAMES, overlap=WINDOW_OVERLAP,
+                                use_masking=True, cell_size_m=1.0, voxel_size_m=0.3):
+    """Batch VGGT reconstruction from a phone-recorded session fixture (see
+    stream/recorder.py's SessionRecorder, and live_pipeline.py's --record-only)
+    instead of a video file.
+
+    Reads the exact frames actually captured - no re-decode/re-encode through
+    a video container (which sample_video_frames' cv2.VideoCapture path would
+    do, stacking a second generation of JPEG loss on top per recorder.py's own
+    docstring) - and real per-frame timestamps from frame_timestamps.json, not
+    an assumed constant fps: a dropped frame is recorded as `None` and skipped
+    here, not treated as part of a gap-free sequence (recorder.py's on_frame
+    explains why - the app drops frames on purpose when the link congests).
+
+    NOT consumed yet: imu_data.json, camera_intrinsics.json. VGGT
+    self-estimates intrinsics/extrinsics, and the georeferencing path
+    (umeyama_alignment) only ever uses positions, never orientation - wiring
+    either in would need real changes to run_window's VGGT calls, unverified
+    to help. Documented future work, not a silent gap."""
+    t_start = time.monotonic()
+    frame_paths, frame_times = _load_recording_frames(session_dir)
+    gps_track = load_gps_track_from_recording(session_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    return _reconstruct_core(frame_paths, frame_times, gps_track, out_dir,
+                              ref_lat, ref_lon, ref_alt, window_frames, overlap,
+                              use_masking, cell_size_m, voxel_size_m, t_start)
+
+
+def _load_recording_frames(session_dir):
+    """Reads frame_timestamps.json + frames/*.jpg from a SessionRecorder
+    fixture, skipping dropped frames (timestamp `None`, no corresponding
+    file - see recorder.py's on_frame). Split out from
+    reconstruct_from_recording so this logic (no torch/VGGT import) is
+    unit-testable without a GPU or the checkpoint - see
+    tests/test_vggt_bridge.py."""
+    frames_dir = os.path.join(session_dir, "frames")
+    with open(os.path.join(session_dir, "frame_timestamps.json")) as f:
+        raw_times = json.load(f)
+
+    frame_paths, frame_times = [], []
+    n_dropped = 0
+    for idx, t in enumerate(raw_times):
+        if t is None:
+            n_dropped += 1
+            continue
+        frame_paths.append(os.path.join(frames_dir, "%06d.jpg" % idx))
+        frame_times.append(t)
+    if n_dropped:
+        print("reconstruct_from_recording: %d of %d frames were dropped during "
+              "capture (recorder queue overflow) - proceeding with the %d that "
+              "made it to disk" % (n_dropped, len(raw_times), len(frame_paths)))
+    if len(frame_paths) < 2:
+        raise RuntimeError("need at least 2 recorded frames, got %d" % len(frame_paths))
+    return frame_paths, frame_times
+
+
+def _reconstruct_core(frame_paths, frame_times, gps_track, out_dir, ref_lat, ref_lon, ref_alt,
+                       window_frames, overlap, use_masking, cell_size_m, voxel_size_m, t_start):
+    """The shared body of reconstruct()/reconstruct_from_recording(), from
+    just after frame/GPS loading onward: windowing, VGGT, georeferencing,
+    merging, export. Agnostic to whether frame_paths/frame_times/gps_track
+    came from a video file or a phone-recorded session."""
     georeferenced = True
     if ref_lat is None:
         if not gps_track:
@@ -763,15 +854,25 @@ def _write_trajectory_plot(out_dir, traj_t, traj_vggt, traj_gps):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--video", required=True, help="single-pass drone/phone video file")
-    ap.add_argument("--gps", default=None, help="CSV: timestamp_s,lat_deg,lon_deg,alt_m")
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--video", help="single-pass drone/phone video file")
+    src.add_argument("--from-recording", metavar="DIR",
+                      help="a session fixture directory from live_pipeline.py "
+                           "--record-only (or --record) instead of a video file - "
+                           "see reconstruct_from_recording. --gps is ignored with "
+                           "this option; GPS comes from the recording's own "
+                           "gps_data.json.")
+    ap.add_argument("--gps", default=None, help="CSV: timestamp_s,lat_deg,lon_deg,alt_m "
+                                                 "(--video only)")
     ap.add_argument("--ref-lat", type=float, default=None)
     ap.add_argument("--ref-lon", type=float, default=None)
     ap.add_argument("--ref-alt", type=float, default=None)
     ap.add_argument("--out", required=True, help="output directory")
     ap.add_argument("--window-frames", type=int, default=WINDOW_FRAMES)
     ap.add_argument("--overlap", type=int, default=WINDOW_OVERLAP)
-    ap.add_argument("--sample-fps", type=float, default=SAMPLE_FPS)
+    ap.add_argument("--sample-fps", type=float, default=SAMPLE_FPS,
+                     help="--video only - a recording already has real per-frame "
+                          "timestamps, nothing to resample")
     ap.add_argument("--no-masking", action="store_true", help="skip YOLO dynamic-object masking")
     ap.add_argument("--cell-size-m", type=float, default=1.0)
     ap.add_argument("--voxel-size-m", type=float, default=0.3,
@@ -779,13 +880,16 @@ def main():
                           "scenes (default 0.3 is aerial-scale, see reconstruct()'s docstring)")
     args = ap.parse_args()
 
-    reconstruct(
-        args.video, args.gps, args.out,
+    common = dict(
         ref_lat=args.ref_lat, ref_lon=args.ref_lon, ref_alt=args.ref_alt,
-        window_frames=args.window_frames, overlap=args.overlap, sample_fps=args.sample_fps,
+        window_frames=args.window_frames, overlap=args.overlap,
         use_masking=not args.no_masking, cell_size_m=args.cell_size_m,
         voxel_size_m=args.voxel_size_m,
     )
+    if args.from_recording:
+        reconstruct_from_recording(args.from_recording, args.out, **common)
+    else:
+        reconstruct(args.video, args.gps, args.out, sample_fps=args.sample_fps, **common)
 
 
 if __name__ == "__main__":
