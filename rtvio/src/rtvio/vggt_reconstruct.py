@@ -74,6 +74,49 @@ DEPTH_CONF_PERCENTILE = 50  # VGGT confidence threshold: keep points above the
 MIN_GPS_POINTS_FOR_ALIGN = 3  # umeyama_alignment needs >=3 non-collinear points
 
 
+def confidence_gate(depth_conf_np, percentile=DEPTH_CONF_PERCENTILE):
+    """Adaptive per-window confidence threshold (see DEPTH_CONF_PERCENTILE)
+    since VGGT's confidence scale is scene-relative, not an absolute
+    probability - a fixed threshold that worked on one scene silently keeps
+    ~0 or ~all points on another. This is exactly the kind of silent-zero
+    failure the old pipeline's "sparse map stuck at 0 points" bug was (see
+    CHANGELOG.md) - the caller logging the kept fraction is how we catch it
+    happening again instead of discovering it later. Split out from
+    run_window so this can be unit-tested on synthetic arrays without a GPU
+    or the checkpoint - see tests/test_vggt_bridge.py.
+
+    The percentile is taken over pixels ABOVE the window's own floor value,
+    not the raw array - confirmed on a real bf16 run (this GPU's first; the
+    machine that originally wrote this pipeline only ever tested fp16) on a
+    low-oblique aerial clip with a lot of flat overcast sky: 84% of ALL
+    pixels sat at the EXACT floor confidence value (sky and other
+    textureless surfaces have no real signal to estimate depth from). With
+    a floor mass that large, percentile=50 of the raw array returns the
+    floor itself, so >= against it kept 100% of pixels - the gate silently
+    did nothing, and all that near-arbitrary sky depth (each frame guesses
+    differently) survived into the cloud. Visually confirmed: this produced
+    a thin, cone-shaped point cloud (apex = the bright, low-saturation sky
+    pixels VGGT placed at anomalously shallow depth); restricting the
+    percentile to only the non-floor pixels resolved it into a coherent
+    cluster instead, verified on the same clip. Falls back to the floor
+    itself (keep everything) in the one case the previous, simpler version
+    was written for: EVERY pixel in the window is truly at the floor (no
+    non-floor pixels exist at all) - nothing left to filter by.
+
+    Returns (keep: bool array same shape as depth_conf_np, thresh: float)."""
+    floor = depth_conf_np.min()
+    above_floor = depth_conf_np[depth_conf_np > floor]
+    thresh = np.percentile(above_floor, percentile) if len(above_floor) > 0 else floor
+    # >=, not > : thresh is a percentile of values strictly greater than
+    # floor (see above_floor's construction), so >= here still correctly
+    # excludes every floor-tied pixel in the normal case, while keeping the
+    # degenerate all-floor case (thresh==floor) working as "keep everything"
+    # rather than "keep nothing" (fp16-ties history this line originally
+    # guarded against, still valid - see git history for the pre-bf16 fix).
+    keep = depth_conf_np >= max(thresh, 1e-6)
+    return keep, thresh
+
+
 def sample_video_frames(video_path, out_dir, sample_fps=SAMPLE_FPS):
     """Extracts frames at `sample_fps` to `out_dir` as 0-padded JPEGs, and
     returns [(frame_path, video_timestamp_s), ...]. Writing to disk (not
@@ -271,7 +314,25 @@ def run_window(model, device, dtype, frame_paths, masker=None):
             masked_paths.append(masked_path)
         frame_paths = masked_paths
 
-    images = load_and_preprocess_images(frame_paths).to(device)
+    # load_and_preprocess_images' default mode="crop" fixes width to 518px
+    # then center-crops height if THAT overshoots 518 - a no-op for
+    # landscape/near-square input (this pipeline's original target: 3840x2160
+    # drone footage never triggers it, since height <= width there) but for
+    # portrait video (e.g. a phone held vertically - confirmed on a real
+    # 1080x1920 test clip) it silently discards ~44% of every frame's
+    # vertical extent, foreground and horizon both, leaving VGGT to
+    # reconstruct only a squeezed middle strip - this produced a thin,
+    # frustum-shaped cloud that looked at first like an insufficient-camera-
+    # motion problem but wasn't (confirmed: resampling at a 4x sparser rate,
+    # which should increase real inter-frame motion, left the cloud's
+    # shape/extent ratio unchanged - ruling that out). mode="pad" preserves
+    # every pixel instead (pads the shorter side rather than cropping the
+    # longer one) - use it whenever the source is portrait; landscape input's
+    # already-verified crop-mode behavior (which never actually crops there)
+    # is left untouched.
+    sample_h, sample_w = cv2.imread(frame_paths[0]).shape[:2]
+    preprocess_mode = "pad" if sample_h > sample_w else "crop"
+    images = load_and_preprocess_images(frame_paths, mode=preprocess_mode).to(device)
     with torch.no_grad():
         images_b = images[None]
         # autocast wraps ONLY the aggregator, not the whole forward pass.
@@ -309,24 +370,7 @@ def run_window(model, device, dtype, frame_paths, masker=None):
     cam_R_world = cam_to_world[:, :3, :3]
     cam_centers_world = cam_to_world[:, :3, 3]
 
-    # Confidence gate: adaptive per window (see DEPTH_CONF_PERCENTILE) since
-    # VGGT's confidence scale is scene-relative, not an absolute probability
-    # - a fixed threshold that worked on one scene silently keeps ~0 or ~all
-    # points on another. This is exactly the kind of silent-zero failure
-    # the old pipeline's "sparse map stuck at 0 points" bug was (see
-    # CHANGELOG.md) - logging the kept fraction below is how we catch it
-    # happening again instead of discovering it later.
-    thresh = np.percentile(depth_conf_np, DEPTH_CONF_PERCENTILE)
-    # >=, not > : measured on a real run (fp16 weights - see _load_vggt for
-    # why fp16 is required to fit this GPU's VRAM at all) that depth_conf's
-    # limited fp16 precision leaves it heavily tied - a strict '>' against
-    # its own 50th-percentile value excluded every tied pixel and kept
-    # exactly 0 points, the silent-zero failure the comment above already
-    # warns about. Confirmed via the min/max/thresh print below, not
-    # guessed: on that run min==max==thresh, i.e. depth_conf was
-    # (near-)constant across the whole window, so ANY strict threshold
-    # against a percentile of itself keeps nothing.
-    keep = depth_conf_np >= max(thresh, 1e-6)
+    keep, thresh = confidence_gate(depth_conf_np, DEPTH_CONF_PERCENTILE)
     print("  depth_conf stats: min=%.4g max=%.4g p%d(thresh)=%.4g"
           % (depth_conf_np.min(), depth_conf_np.max(), DEPTH_CONF_PERCENTILE, thresh))
 

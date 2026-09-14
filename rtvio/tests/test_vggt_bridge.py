@@ -19,7 +19,11 @@ import os
 import shutil
 import tempfile
 
-from rtvio.vggt_reconstruct import _load_recording_frames, load_gps_track_from_recording
+import numpy as np
+
+from rtvio.vggt_reconstruct import (
+    _load_recording_frames, load_gps_track_from_recording, confidence_gate,
+)
 
 PASS, FAIL = [], []
 
@@ -105,6 +109,45 @@ def test_gps_track_from_recording_missing_file_is_relative_mode_not_an_error():
               "not an exception", track == [], track)
     finally:
         shutil.rmtree(tmp)
+
+
+def test_confidence_gate_filters_a_majority_floor_distribution():
+    # Reproduces the real bug found on a low-oblique aerial clip with a lot
+    # of flat overcast sky: 84% of pixels sat at the exact floor confidence
+    # value, so percentile=50 of the RAW array returned the floor itself and
+    # >= against it kept everything - the gate silently did nothing. Built
+    # here at a smaller scale (1000 values, 850 at the floor) but the same
+    # shape of distribution.
+    rng = np.random.default_rng(0)
+    conf = np.concatenate([np.ones(850), rng.uniform(1.5, 8.0, size=150)])
+    keep, thresh = confidence_gate(conf, percentile=50)
+    check("threshold is above the floor, not equal to it", thresh > 1.0, thresh)
+    check("does not keep every pixel", keep.mean() < 0.5, keep.mean())
+    check("keeps roughly the top half of the NON-floor pixels (~7.5% of the "
+          "whole array: 50% of the 15% that isn't at the floor)",
+          0.05 < keep.mean() < 0.10, keep.mean())
+
+
+def test_confidence_gate_all_floor_keeps_everything():
+    # The case the original (pre-bf16) version of this gate was written
+    # for: fp16 precision ties EVERY pixel to the same value - no non-floor
+    # pixels exist at all, so there's nothing to filter by. Must not
+    # regress to keeping 0 points (a real failure this codebase hit before
+    # confidence_gate excluded the >= floor case - see its docstring).
+    conf = np.full(500, 3.0)
+    keep, thresh = confidence_gate(conf, percentile=50)
+    check("degenerate all-tied window keeps everything, not nothing",
+          keep.all(), keep.mean())
+    check("threshold falls back to the floor itself", thresh == 3.0, thresh)
+
+
+def test_confidence_gate_real_variation_still_behaves_like_a_median():
+    # Sanity check for the ordinary case (no degenerate floor mass at all):
+    # should behave like the original "keep the top half" intent.
+    conf = np.linspace(1.0, 10.0, 1000)
+    keep, thresh = confidence_gate(conf, percentile=50)
+    check("keeps roughly half of a smoothly-varying distribution",
+          0.45 < keep.mean() < 0.55, keep.mean())
 
 
 if __name__ == "__main__":
