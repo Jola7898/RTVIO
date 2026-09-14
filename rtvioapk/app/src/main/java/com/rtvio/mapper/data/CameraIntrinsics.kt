@@ -68,6 +68,75 @@ data class CameraIntrinsics(
 }
 
 /**
+ * Intrinsics for the frames the app actually sends: the analysis buffer
+ * ([bufferW] x [bufferH], sensor orientation) rotated upright by
+ * [rotationDegrees], exactly as FrameEncoder rotates it.
+ *
+ * [cameraIntrinsicsFromCharacteristics] below describes a hypothetical image
+ * of the requested size, which was wrong twice over on a real phone: the
+ * calibration is in active-array pixels (e.g. 4000x3000), not the buffer's,
+ * and the sent frames are portrait while the sensor is landscape. It also
+ * passed through a (0, 0) principal point, which some devices report when
+ * they do not populate it. This maps the calibration through the same
+ * centred crop + scale CameraX applies to reach the buffer, then through the
+ * rotation, and falls back to the image centre for a zero principal point.
+ */
+fun cameraIntrinsicsForOutput(
+    characteristics: CameraCharacteristics,
+    bufferW: Int,
+    bufferH: Int,
+    rotationDegrees: Int
+): CameraIntrinsics {
+    val active = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+    val aw = (active?.width() ?: bufferW).toDouble()
+    val ah = (active?.height() ?: bufferH).toDouble()
+
+    val calib = characteristics.get(CameraCharacteristics.LENS_INTRINSIC_CALIBRATION)
+    var fx: Double
+    var fy: Double
+    var cx: Double
+    var cy: Double
+    val source: String
+    if (calib != null && calib.size >= 4 && calib[0] > 0f && calib[1] > 0f) {
+        fx = calib[0].toDouble(); fy = calib[1].toDouble()
+        cx = calib[2].toDouble(); cy = calib[3].toDouble()
+        if (cx <= 0.0 || cy <= 0.0) { cx = aw / 2; cy = ah / 2 }
+        source = "Camera2 LENS_INTRINSIC_CALIBRATION, mapped to ${bufferW}x$bufferH rot $rotationDegrees"
+    } else {
+        val f = characteristics.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: 0f
+        val sensor = characteristics.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+        if (f > 0f && sensor != null && sensor.width > 0f) {
+            fx = f / sensor.width * aw
+            fy = f / sensor.height * ah
+            source = "focal length %.2f mm / sensor %.2fx%.2f mm, mapped to %dx%d rot %d".format(
+                f, sensor.width, sensor.height, bufferW, bufferH, rotationDegrees)
+        } else {
+            fx = aw * 0.8; fy = fx
+            source = "no calibration or focal length - nominal guess"
+        }
+        cx = aw / 2; cy = ah / 2
+    }
+
+    // CameraX fills the buffer from a centred crop of the active array that
+    // has the buffer's aspect ratio, scaled by k active pixels per buffer pixel.
+    val k = minOf(aw / bufferW, ah / bufferH)
+    val offX = (aw - bufferW * k) / 2
+    val offY = (ah - bufferH * k) / 2
+    fx /= k; fy /= k
+    cx = (cx - offX) / k; cy = (cy - offY) / k
+
+    // Same pixel mapping as FrameEncoder: 90 -> (u', v') = (H-1-v, u),
+    // 270 -> (u', v') = (v, W-1-u), 180 -> (W-1-u, H-1-v).
+    val rot = ((rotationDegrees % 360) + 360) % 360
+    return when (rot) {
+        90 -> CameraIntrinsics(fy, fx, bufferH - 1 - cy, cx, source = source)
+        270 -> CameraIntrinsics(fy, fx, cy, bufferW - 1 - cx, source = source)
+        180 -> CameraIntrinsics(fx, fy, bufferW - 1 - cx, bufferH - 1 - cy, source = source)
+        else -> CameraIntrinsics(fx, fy, cx, cy, source = source)
+    }
+}
+
+/**
  * Recover intrinsics from Camera2 characteristics. Prefers the authoritative
  * LENS_INTRINSIC_CALIBRATION when available, falls back to computed from
  * focal length and sensor geometry.

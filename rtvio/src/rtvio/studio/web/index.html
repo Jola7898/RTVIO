@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RTVIO Studio</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">RTVIO <span>Studio</span></div>
+  <div id="phonePill" class="pill pill-off">phone disconnected</div>
+  <div class="gpu" title="GPU utilisation (nvidia-smi, 1 s samples)">
+    <canvas id="gpuSpark" width="160" height="28"></canvas>
+    <div class="gpu-text">
+      <div><b id="gpuUtil">–</b> GPU</div>
+      <div class="muted" id="gpuMem">–</div>
+    </div>
+  </div>
+</header>
+
+<main class="grid">
+  <!-- ============================================================ left -->
+  <section class="col-left">
+    <div class="card">
+      <div class="card-head">
+        <h2>Phone</h2>
+        <span class="muted small" id="phoneModel"></span>
+      </div>
+      <div class="viewfinder">
+        <img id="preview" alt="">
+        <div id="previewEmpty" class="viewfinder-empty">
+          <div class="big">No phone connected</div>
+          <div class="small muted">In the app: Settings → Server IP</div>
+          <div class="ips" id="lanIps"></div>
+          <div class="small muted">then tap <b>CONNECT</b></div>
+        </div>
+        <div id="recBadge" class="rec-badge hidden">● REC <span id="recTime">00:00</span></div>
+      </div>
+      <dl class="kv" id="phoneKv"></dl>
+    </div>
+
+    <div class="card">
+      <button id="recordBtn" class="record-btn" disabled>Start recording</button>
+      <div class="rec-stats" id="recStats"></div>
+      <div class="hint small muted" id="recHint"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Capture</h2><span class="muted small">applied at the next START</span></div>
+      <div class="form">
+        <label>Resolution
+          <select data-setting="capture.resolution">
+            <option value="720p">720p (recommended)</option>
+            <option value="1080p">1080p</option>
+          </select>
+        </label>
+        <label>Frame rate
+          <select data-setting="capture.fps" data-type="int">
+            <option value="30">30 fps</option>
+            <option value="24">24 fps</option>
+            <option value="15">15 fps</option>
+          </select>
+        </label>
+        <label>JPEG quality <output id="qOut"></output>
+          <input type="range" min="60" max="95" step="5" data-setting="capture.jpeg_quality" data-type="int">
+        </label>
+        <label class="check"><input type="checkbox" data-setting="capture.gps"> Record GPS</label>
+        <label class="check"><input type="checkbox" data-setting="capture.imu"> Record IMU (not used for reconstruction)</label>
+      </div>
+      <p class="small muted">VGGT sees every frame at 518 px, so 720p loses nothing and keeps the phone at full frame rate.</p>
+    </div>
+  </section>
+
+  <!-- =========================================================== right -->
+  <section class="col-right">
+    <div class="card">
+      <div class="card-head">
+        <h2>Sessions</h2>
+        <label class="check small"><input type="checkbox" data-setting="auto_reconstruct"> reconstruct automatically after each take</label>
+      </div>
+      <div id="sessions" class="sessions"><div class="muted">No recordings yet.</div></div>
+    </div>
+
+    <details class="card" id="reconCard">
+      <summary><h2>Reconstruction settings</h2><span class="muted small">vision-only by default (no GPS, no IMU)</span></summary>
+      <div class="form form-2">
+        <label>Frames per VGGT window
+          <input type="text" data-setting="recon.window_frames" placeholder="auto">
+          <span class="small muted">"auto" = as many as fit in VRAM</span>
+        </label>
+        <label>Window overlap (frames)
+          <input type="number" min="2" max="64" data-setting="recon.overlap" data-type="int">
+        </label>
+        <label>Frame stride
+          <input type="number" min="1" max="30" data-setting="recon.frame_stride" data-type="int">
+          <span class="small muted">1 = use every frame</span>
+        </label>
+        <label>Confidence percentile
+          <input type="number" min="0" max="95" data-setting="recon.conf_percentile" data-type="int">
+          <span class="small muted">lower keeps more (noisier) points</span>
+        </label>
+        <label>Cloud density (voxel factor)
+          <input type="number" min="0.25" max="4" step="0.25" data-setting="recon.voxel_factor" data-type="float">
+          <span class="small muted">1 = one point per pixel footprint; smaller = denser</span>
+        </label>
+        <label>Min views per point
+          <input type="number" min="1" max="10" data-setting="recon.min_views" data-type="int">
+        </label>
+        <label>Poisson depth
+          <input type="number" min="7" max="12" data-setting="recon.poisson_depth" data-type="int">
+        </label>
+        <label>GPS
+          <select data-setting="recon.gps_mode">
+            <option value="off">off (indoor)</option>
+            <option value="global">georeference (outdoor)</option>
+          </select>
+        </label>
+        <label class="check"><input type="checkbox" data-setting="recon.masking"> Mask people / moving objects</label>
+        <label class="check"><input type="checkbox" data-setting="recon.extras"> Also write LAS, OBJ/GLB, COLMAP</label>
+      </div>
+    </details>
+
+    <details class="card">
+      <summary><h2>Event log</h2></summary>
+      <pre id="events" class="log"></pre>
+    </details>
+  </section>
+</main>
+
+<!-- ============================================================ viewer -->
+<div id="viewer" class="viewer hidden">
+  <div class="viewer-bar">
+    <b id="viewerTitle">Viewer</b>
+    <div class="seg" id="viewerKind">
+      <button data-kind="cloud">Point cloud</button>
+      <button data-kind="mesh">Poisson mesh</button>
+    </div>
+    <label class="small">point size <input type="range" id="ptSize" min="1" max="8" step="0.5" value="2"></label>
+    <label class="small check"><input type="checkbox" id="litMesh"> shaded</label>
+    <label class="small check"><input type="checkbox" id="showCams" checked> cameras</label>
+    <button id="viewerReset">Reset view</button>
+    <a id="viewerDownload" class="btn" download>Download</a>
+    <span class="muted small" id="viewerInfo"></span>
+    <button id="viewerClose" class="close">✕</button>
+  </div>
+  <div id="viewerCanvas"></div>
+  <div id="viewerLoading" class="viewer-loading">loading…</div>
+</div>
+
+<script src="/static/vendor/three.min.js"></script>
+<script src="/static/vendor/OrbitControls.js"></script>
+<script src="/static/vendor/PLYLoader.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

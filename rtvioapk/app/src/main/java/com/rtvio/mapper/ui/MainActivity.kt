@@ -10,35 +10,42 @@ import android.os.Bundle
 import android.provider.Settings as AndroidSettings
 import android.view.HapticFeedbackConstants
 import android.view.View
+import android.view.WindowManager
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import com.rtvio.mapper.R
+import com.rtvio.mapper.data.DeviceSpecsCollector
 import com.rtvio.mapper.data.SettingsManager
 import com.rtvio.mapper.databinding.ActivityMainBinding
-import com.rtvio.mapper.data.DeviceSpecsCollector
 import com.rtvio.mapper.net.ConnectionState
 import com.rtvio.mapper.net.StreamStats
+import com.rtvio.mapper.service.LinkState
 import com.rtvio.mapper.service.StreamingForegroundService
 import com.rtvio.mapper.service.StreamingSession
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.Locale
 
 /**
- * The single operational screen: preview, live status, and the start/stop
- * control.
+ * The single operational screen: preview, live status, and the controls.
  *
- * All the moving parts live in [StreamingSession]; this class is deliberately
- * limited to permissions, rendering state and relaying user intent.
+ * CONNECT opens the link. Against RTVIO Studio (the desktop web UI) the phone
+ * then sits READY with the viewfinder going to the desktop, and recordings are
+ * started and stopped from the browser - or with the REC button here. Against
+ * an older receiver it streams live, as it always did.
+ *
+ * All the moving parts live in [StreamingSession]; this class is limited to
+ * permissions, rendering state and relaying user intent.
  */
 class MainActivity : AppCompatActivity() {
 
@@ -49,7 +56,7 @@ class MainActivity : AppCompatActivity() {
 
     private var statusExpanded = true
 
-    /** Set when the user taps START before the permission dialog resolves. */
+    /** Set when the user taps CONNECT before the permission dialog resolves. */
     private var startAfterPermission = false
 
     private val permissionLauncher = registerForActivityResult(
@@ -63,7 +70,7 @@ class MainActivity : AppCompatActivity() {
         bindPreviewIfPermitted()
         if (startAfterPermission) {
             startAfterPermission = false
-            beginStreaming()
+            connect()
         }
     }
 
@@ -90,7 +97,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         labelRows()
-        binding.btnStream.setOnClickListener { onStreamButton() }
+        binding.btnStream.setOnClickListener { onConnectButton() }
+        binding.btnRecord.setOnClickListener {
+            it.performHapticFeedbackIfEnabled()
+            session.toggleRecording()
+        }
         binding.btnSettings.setOnClickListener {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
@@ -100,7 +111,7 @@ class MainActivity : AppCompatActivity() {
         // service, which has no handle on the camera or the socket; this is
         // what turns either of those into a real teardown.
         StreamingForegroundService.onStopRequested = {
-            runOnUiThread { if (session.isStreaming) endStreaming() }
+            runOnUiThread { if (session.isStreaming) endSession() }
         }
 
         observeSession()
@@ -112,8 +123,8 @@ class MainActivity : AppCompatActivity() {
     private fun requestStartupPermissions() {
         val wanted = mutableListOf<String>()
         if (!has(Manifest.permission.CAMERA)) wanted += Manifest.permission.CAMERA
-        // Location is needed for GPS in outdoor mode, and is also what lets
-        // Android report the WiFi SSID on the status screen.
+        // Location is needed for GPS in outdoor mode (or when the desktop asks
+        // for GPS), and is also what lets Android report the WiFi SSID.
         if (settings.outdoorMode && !has(Manifest.permission.ACCESS_FINE_LOCATION)) {
             wanted += Manifest.permission.ACCESS_FINE_LOCATION
         }
@@ -151,8 +162,7 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         // Rebinding here picks up any resolution or frame-rate change made in
         // Settings, but never mid-session: rebinding would drop frames. Quality
-        // is the one setting that can be retuned without a rebind, so a running
-        // session picks it up too.
+        // is the one setting that can be retuned without a rebind.
         if (session.isStreaming) session.applyQuality() else bindPreviewIfPermitted()
         applyOverlayVisibility()
         renderIdleState()
@@ -160,8 +170,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
-        // A session in progress keeps the camera; the foreground service is
-        // what makes that legal and survivable.
+        // A connected session keeps the camera; the foreground service is what
+        // makes that legal and survivable.
         if (!session.isStreaming) session.stopPreview()
     }
 
@@ -177,56 +187,58 @@ class MainActivity : AppCompatActivity() {
         session.startPreview(this, binding.previewView)
     }
 
-    // ----------------------------------------------------------- start / stop
+    // ---------------------------------------------------------- connect/stop
 
-    private fun onStreamButton() {
+    private fun onConnectButton() {
         binding.btnStream.performHapticFeedbackIfEnabled()
-        if (session.isStreaming) endStreaming() else {
-            if (!has(Manifest.permission.CAMERA)) {
-                startAfterPermission = true
-                permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
-                return
-            }
-            if (settings.outdoorMode && !has(Manifest.permission.ACCESS_FINE_LOCATION)) {
-                // Outdoor mode without location still streams video and IMU, so
-                // ask, explain, and let the session proceed either way.
-                MaterialAlertDialogBuilder(this)
-                    .setMessage(R.string.perm_location_rationale)
-                    .setPositiveButton(R.string.perm_grant) { _, _ ->
-                        startAfterPermission = true
-                        permissionLauncher.launch(
-                            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
-                        )
-                    }
-                    .setNegativeButton(R.string.cancel) { _, _ -> beginStreaming() }
-                    .show()
-                return
-            }
-            beginStreaming()
-        }
-    }
-
-    private fun beginStreaming() {
-        val error = session.start(this, binding.previewView)
-        if (error != null) {
-            Snackbar.make(binding.root, error, Snackbar.LENGTH_LONG).show()
+        if (session.isStreaming) {
+            disconnect()
             return
         }
-        binding.btnStream.setText(R.string.action_stop)
-        // MaterialButton manages its own background drawable, so tint it rather
-        // than replacing the background outright.
-        binding.btnStream.backgroundTintList =
-            ColorStateList.valueOf(ContextCompat.getColor(this, R.color.stop_red))
+        if (!has(Manifest.permission.CAMERA)) {
+            startAfterPermission = true
+            permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
+            return
+        }
+        if (settings.outdoorMode && !has(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            // Outdoor mode without location still streams video and IMU, so
+            // ask, explain, and let the session proceed either way.
+            MaterialAlertDialogBuilder(this)
+                .setMessage(R.string.perm_location_rationale)
+                .setPositiveButton(R.string.perm_grant) { _, _ ->
+                    startAfterPermission = true
+                    permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION))
+                }
+                .setNegativeButton(R.string.cancel) { _, _ -> connect() }
+                .show()
+            return
+        }
+        connect()
     }
 
-    private fun endStreaming() {
+    private fun connect() {
+        val error = session.start(this, binding.previewView)
+        if (error != null) Snackbar.make(binding.root, error, Snackbar.LENGTH_LONG).show()
+    }
+
+    /** Asks before throwing away recorded frames that have not been uploaded. */
+    private fun disconnect() {
+        val backlog = session.recordingBacklog
+        val state = session.state.value
+        if (state == LinkState.RECORDING || backlog > 0) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.disconnect_unsent_title)
+                .setMessage(getString(R.string.disconnect_unsent_message, maxOf(backlog, 1)))
+                .setPositiveButton(R.string.disconnect_anyway) { _, _ -> endSession() }
+                .setNegativeButton(R.string.cancel, null)
+                .show()
+            return
+        }
+        endSession()
+    }
+
+    private fun endSession() {
         val summary = session.stop()
-        binding.btnStream.setText(R.string.action_start)
-        binding.btnStream.backgroundTintList = ColorStateList.valueOf(
-            com.google.android.material.color.MaterialColors.getColor(
-                binding.btnStream, com.google.android.material.R.attr.colorPrimary
-            )
-        )
         renderIdleState()
         showSummary(summary)
     }
@@ -234,16 +246,14 @@ class MainActivity : AppCompatActivity() {
     private fun showSummary(s: StreamingSession.Summary) {
         val seconds = s.durationMs / 1000.0
         val text = buildString {
-            appendLine("Duration: %s".format(formatDuration(s.durationMs)))
+            appendLine("Connected: %s".format(formatDuration(s.durationMs)))
             appendLine("Frames sent: %,d".format(s.framesSent))
             appendLine("Frames dropped: %,d".format(s.framesDropped))
             appendLine("IMU samples: %,d".format(s.imuSamples))
             appendLine("GPS fixes: %,d".format(s.gpsFixes))
             appendLine("Data sent: %.1f MB".format(s.bytesSent / 1e6))
             if (seconds > 0) {
-                appendLine("Average rate: %.1f fps, %.2f Mbps".format(
-                    s.framesSent / seconds, s.bytesSent * 8 / 1e6 / seconds
-                ))
+                appendLine("Average: %.2f Mbps".format(s.bytesSent * 8 / 1e6 / seconds))
             }
         }
         MaterialAlertDialogBuilder(this)
@@ -272,29 +282,17 @@ class MainActivity : AppCompatActivity() {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
                     session.client.connection.collectLatest { info ->
-                        val (label, color) = when (info.state) {
-                            ConnectionState.CONNECTED ->
-                                getString(R.string.state_connected) to R.color.status_ok
-                            ConnectionState.CONNECTING ->
-                                getString(R.string.state_connecting) to R.color.status_warn
-                            ConnectionState.ERROR ->
-                                getString(R.string.state_error) to R.color.status_error
-                            ConnectionState.DISCONNECTED ->
-                                getString(R.string.state_disconnected) to R.color.status_error
-                        }
-                        binding.statusState.text = label
-                        binding.statusState.setTextColor(ContextCompat.getColor(this@MainActivity, color))
                         binding.statusDetail.text = info.detail
                         binding.statusDetail.visibility =
                             if (info.detail.isEmpty()) View.GONE else View.VISIBLE
                         binding.rowServer.rowValue.text =
                             if (info.host.isEmpty()) getString(R.string.no_server_set)
                             else "${info.host}:${info.port}"
+                        renderState()
                     }
                 }
-                launch {
-                    session.client.stats.collectLatest { renderStats(it) }
-                }
+                launch { session.state.collectLatest { renderState() } }
+                launch { session.client.stats.collectLatest { renderStats(it) } }
                 launch {
                     session.events.collectLatest {
                         Snackbar.make(binding.root, it, Snackbar.LENGTH_LONG).show()
@@ -306,29 +304,110 @@ class MainActivity : AppCompatActivity() {
                             if (up || !session.isStreaming) View.GONE else View.VISIBLE
                     }
                 }
-                // Camera FPS, GPS age, gyro and battery are polled rather than
-                // pushed: they change continuously, and a 1 Hz refresh is all a
-                // human can read anyway.
+                // Camera FPS, recording time, GPS age, gyro and battery are
+                // polled: they change continuously, and a human reads 1 Hz.
                 launch { pollFastState() }
             }
         }
+    }
+
+    /** Buttons, header label and screen-on flag from the session state. */
+    private fun renderState() {
+        val state = session.state.value
+        val conn = session.client.connection.value
+
+        binding.btnStream.setText(
+            when (state) {
+                LinkState.OFF -> R.string.action_connect
+                LinkState.CONNECTING -> R.string.action_cancel_connect
+                LinkState.STREAMING -> R.string.action_stop
+                else -> R.string.action_disconnect
+            }
+        )
+        binding.btnStream.backgroundTintList = ColorStateList.valueOf(
+            when (state) {
+                LinkState.OFF -> MaterialColors.getColor(binding.btnStream, com.google.android.material.R.attr.colorPrimary)
+                LinkState.STREAMING -> ContextCompat.getColor(this, R.color.stop_red)
+                else -> MaterialColors.getColor(binding.btnStream, com.google.android.material.R.attr.colorSecondary)
+            }
+        )
+
+        val remote = state == LinkState.ARMED || state == LinkState.RECORDING || state == LinkState.FINISHING
+        binding.btnRecord.visibility = if (remote) View.VISIBLE else View.GONE
+        binding.btnRecord.isEnabled = state != LinkState.FINISHING
+        binding.btnRecord.text = when (state) {
+            LinkState.RECORDING -> getString(R.string.action_stop_record)
+            LinkState.FINISHING -> getString(R.string.action_uploading, session.recordingBacklog)
+            else -> getString(R.string.action_record)
+        }
+
+        val (label, color) = when {
+            state == LinkState.RECORDING -> getString(R.string.state_recording) to R.color.status_error
+            state == LinkState.FINISHING -> getString(R.string.state_finishing) to R.color.status_warn
+            state == LinkState.ARMED -> getString(R.string.state_armed) to R.color.status_ok
+            conn.state == ConnectionState.CONNECTED -> getString(R.string.state_connected) to R.color.status_ok
+            conn.state == ConnectionState.CONNECTING -> getString(R.string.state_connecting) to R.color.status_warn
+            conn.state == ConnectionState.ERROR -> getString(R.string.state_error) to R.color.status_error
+            else -> getString(R.string.state_disconnected) to R.color.status_error
+        }
+        binding.statusState.text = label
+        binding.statusState.setTextColor(ContextCompat.getColor(this, color))
+
+        // A timeout blanking the screen would stop CameraX (it is bound to
+        // this activity's lifecycle) in the middle of a take.
+        if (state != LinkState.OFF) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        updateRecOverlay()
+        updateModeRow()
     }
 
     private suspend fun pollFastState() {
         while (currentCoroutineContext().isActive) {
             binding.rowFps.rowValue.text = "%.1f".format(session.cameraFps)
             updateOverlays()
+            updateRecOverlay()
             updateBattery()
             updateModeRow()
+            if (session.state.value == LinkState.FINISHING) {
+                binding.btnRecord.text = getString(R.string.action_uploading, session.recordingBacklog)
+            }
             if (session.isStreaming) {
                 StreamingForegroundService.update(
                     this,
-                    "%.0f fps  |  %s".format(
-                        session.cameraFps, binding.rowBandwidth.rowValue.text
-                    )
+                    when (session.state.value) {
+                        LinkState.RECORDING -> "● REC %s  |  %.0f fps".format(recElapsed(), session.cameraFps)
+                        LinkState.FINISHING -> "Uploading %d frames".format(session.recordingBacklog)
+                        LinkState.ARMED -> "Ready - waiting for the desktop"
+                        else -> "%.0f fps  |  %s".format(session.cameraFps, binding.rowBandwidth.rowValue.text)
+                    }
                 )
             }
             delay(1000)
+        }
+    }
+
+    private fun recElapsed(): String {
+        val start = session.recordingStartedAtMs
+        return if (start == 0L) "00:00" else formatDuration(System.currentTimeMillis() - start).substring(3)
+    }
+
+    private fun updateRecOverlay() {
+        val o = binding.overlayRec
+        when (session.state.value) {
+            LinkState.RECORDING -> {
+                val backlog = session.recordingBacklog
+                o.text = buildString {
+                    append("● REC ").append(recElapsed())
+                    append("  ·  %,d".format(session.framesCaptured))
+                    if (backlog > 30) append("  ·  %,d queued".format(backlog))
+                }
+                o.visibility = View.VISIBLE
+            }
+            LinkState.FINISHING -> {
+                o.text = getString(R.string.action_uploading, session.recordingBacklog)
+                o.visibility = View.VISIBLE
+            }
+            else -> o.visibility = View.GONE
         }
     }
 
@@ -336,7 +415,9 @@ class MainActivity : AppCompatActivity() {
         binding.rowLatency.rowValue.text = "%.0f ms".format(s.latencyMs)
         binding.rowBandwidth.rowValue.text = "%.2f Mbps".format(s.mbps)
         binding.rowBuffer.rowValue.text =
-            "${s.videoQueueDepth}/${s.videoQueueCapacity}  (-${s.framesDropped})"
+            if (s.spoolPending > 0 || session.state.value == LinkState.RECORDING)
+                "spool %,d  (%.0f MB)".format(s.spoolPending, s.spoolBytes / 1e6)
+            else "${s.videoQueueDepth}/${s.videoQueueCapacity}  (-${s.framesDropped})"
         binding.rowFrames.rowValue.text = "%,d".format(s.framesSent)
         binding.rowImu.rowValue.text = "%,d".format(s.imuSamplesSent)
     }
@@ -345,21 +426,28 @@ class MainActivity : AppCompatActivity() {
         val ip = settings.serverIp
         binding.rowServer.rowValue.text =
             if (ip.isEmpty()) getString(R.string.no_server_set) else "$ip:${settings.serverPort}"
-        updateModeRow()
+        renderState()
         updateBattery()
     }
 
     private fun updateModeRow() {
-        val mode = if (settings.outdoorMode) getString(R.string.mode_outdoor)
-        else getString(R.string.mode_indoor)
-        val gpsPart = when {
-            !settings.outdoorMode -> ""
-            !session.gps.isProviderEnabled -> " (GPS off)"
-            session.gps.hasFix -> " (%.0f m)".format(session.gps.lastAccuracyM)
-            session.isStreaming -> " (no fix)"
-            else -> ""
+        val text = when (session.state.value) {
+            LinkState.ARMED -> getString(R.string.mode_remote_armed)
+            LinkState.RECORDING -> getString(R.string.mode_remote_recording, session.sessionId ?: "")
+            LinkState.FINISHING -> getString(R.string.mode_remote_finishing, session.recordingBacklog)
+            LinkState.STREAMING -> getString(R.string.mode_live) + gpsPart()
+            else -> (if (settings.outdoorMode) getString(R.string.mode_outdoor)
+                     else getString(R.string.mode_indoor)) + gpsPart()
         }
-        binding.rowMode.rowValue.text = mode + gpsPart
+        binding.rowMode.rowValue.text = text
+    }
+
+    private fun gpsPart(): String = when {
+        !settings.outdoorMode -> ""
+        !session.gps.isProviderEnabled -> " (GPS off)"
+        session.gps.hasFix -> " (%.0f m)".format(session.gps.lastAccuracyM)
+        session.isStreaming -> " (no fix)"
+        else -> ""
     }
 
     private fun updateBattery() {
@@ -373,13 +461,10 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateOverlays() {
         if (settings.showFpsOverlay) {
-            binding.overlayFps.text = "%.1f fps".format(session.cameraFps)
             val res = session.activeResolution
-            if (res != null) {
-                binding.overlayFps.text = "%.1f fps  %dx%d".format(
-                    session.cameraFps, res.width, res.height
-                )
-            }
+            binding.overlayFps.text = if (res != null)
+                "%.1f fps  %dx%d".format(session.cameraFps, res.width, res.height)
+            else "%.1f fps".format(session.cameraFps)
         }
         if (settings.outdoorMode) {
             val age = session.gps.fixAgeMs

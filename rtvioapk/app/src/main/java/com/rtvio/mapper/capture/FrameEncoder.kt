@@ -36,6 +36,9 @@ class FrameEncoder {
     /** The JPEG produced by the most recent [encode]; valid until the next call. */
     class Jpeg(val bytes: ByteArray, val length: Int, val width: Int, val height: Int)
 
+    private var preparedW = 0
+    private var preparedH = 0
+
     /**
      * @param image a YUV_420_888 frame; not closed here, the caller owns it.
      * @param rotationDegrees 0, 90, 180 or 270 - the value CameraX reports as
@@ -44,6 +47,17 @@ class FrameEncoder {
      * @param quality JPEG quality, 1-100.
      */
     fun encode(image: ImageProxy, rotationDegrees: Int, quality: Int): Jpeg {
+        prepare(image, rotationDegrees)
+        return compress(quality)
+    }
+
+    /**
+     * First half of [encode]: copies (and rotates) the camera planes into this
+     * encoder's own NV21 buffer. Must run while [image] is still open; after
+     * it returns the image can be closed and [compress] can run on any thread.
+     * Splitting the two is what lets CameraCapture encode frames in parallel.
+     */
+    fun prepare(image: ImageProxy, rotationDegrees: Int) {
         require(image.format == ImageFormat.YUV_420_888) {
             "expected YUV_420_888, got format ${image.format}"
         }
@@ -59,14 +73,16 @@ class FrameEncoder {
         writeChroma(image, srcW, srcH, rot)
 
         // A 90/270 turn swaps the axes.
-        val outW = if (rot == 90 || rot == 270) srcH else srcW
-        val outH = if (rot == 90 || rot == 270) srcW else srcH
+        preparedW = if (rot == 90 || rot == 270) srcH else srcW
+        preparedH = if (rot == 90 || rot == 270) srcW else srcH
+    }
 
+    /** Second half of [encode]: JPEG-compresses the buffer [prepare] filled. */
+    fun compress(quality: Int): Jpeg {
         jpegOut.reset()
-        YuvImage(nv21, ImageFormat.NV21, outW, outH, null)
-            .compressToJpeg(Rect(0, 0, outW, outH), quality, jpegOut)
-
-        return Jpeg(jpegOut.buffer(), jpegOut.size(), outW, outH)
+        YuvImage(nv21, ImageFormat.NV21, preparedW, preparedH, null)
+            .compressToJpeg(Rect(0, 0, preparedW, preparedH), quality, jpegOut)
+        return Jpeg(jpegOut.buffer(), jpegOut.size(), preparedW, preparedH)
     }
 
     /** Output dimensions [encode] would produce, without doing the work. */

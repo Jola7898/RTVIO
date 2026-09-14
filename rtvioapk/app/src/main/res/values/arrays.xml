@@ -1,12 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string-array name="resolution_entries">
-        <item>720p  (1280 x 720)</item>
-        <item>1080p (1920 x 1080)</item>
+        <item>720p  (1280 px long edge - recommended)</item>
+        <item>1080p (1920 px long edge)</item>
     </string-array>
     <string-array name="resolution_values">
         <item>720p</item>
         <item>1080p</item>
+    </string-array>
+
+    <string-array name="aspect_entries">
+        <item>4:3 (full sensor field of view)</item>
+        <item>16:9 (cropped)</item>
+    </string-array>
+    <string-array name="aspect_values">
+        <item>4:3</item>
+        <item>16:9</item>
     </string-array>
 
     <string-array name="fps_entries">

@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.DataInputStream
 import java.io.IOException
@@ -21,6 +22,7 @@ import java.net.Socket
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED, ERROR }
 
@@ -30,8 +32,14 @@ data class ConnectionInfo(
     val port: Int = 0,
     /** Human-readable detail: the error, or the handshake result. */
     val detail: String = "",
-    val attempt: Int = 0
-)
+    val attempt: Int = 0,
+    /** Protocol version the desktop greeted with; 0 if it sent no handshake. */
+    val serverVersion: Int = 0
+) {
+    /** The desktop is rtvio.studio: wait for its START/STOP instead of streaming. */
+    val remoteControl: Boolean
+        get() = state == ConnectionState.CONNECTED && serverVersion >= Protocol.VERSION_REMOTE_CONTROL
+}
 
 data class StreamStats(
     val framesSent: Long = 0,
@@ -43,13 +51,16 @@ data class StreamStats(
     /** Throughput actually pushed onto the socket over the last second. */
     val mbps: Double = 0.0,
     /**
-     * Milliseconds between a frame being handed to this client and its last
-     * byte reaching the socket. See the note on [latencyNs] for why this, and
-     * not an ICMP ping, is the number reported.
+     * Milliseconds between a live frame being handed to this client and its
+     * last byte reaching the socket (spooled recording frames are not timed -
+     * waiting is their whole point).
      */
     val latencyMs: Double = 0.0,
     val videoQueueDepth: Int = 0,
     val videoQueueCapacity: Int = 0,
+    /** Recording frames waiting in the on-disk spool. */
+    val spoolPending: Int = 0,
+    val spoolBytes: Long = 0,
     val elapsedMs: Long = 0
 )
 
@@ -57,32 +68,33 @@ data class StreamStats(
  * Owns the TCP connection to the desktop receiver and everything that goes over
  * it.
  *
- * Design notes worth knowing before changing this file:
+ * - **One socket, one writer.** Video, IMU, GPS and status are multiplexed onto
+ *   a single stream because the desktop reader dispatches on a leading header
+ *   byte. A single writer coroutine guarantees packets are never interleaved.
  *
- * - **One socket, one writer.** Video, IMU and GPS are multiplexed onto a single
- *   stream because the desktop reader dispatches on a leading header byte. A
- *   single writer coroutine guarantees packets are never interleaved.
+ * - **Control traffic outranks video.** IMU, GPS and status packets are drained
+ *   before video on every pass. They are tiny and irreplaceable; a frame is not.
  *
- * - **Control traffic outranks video.** IMU and GPS packets are drained before
- *   video on every pass. They are tiny and irreplaceable; a frame is neither.
- *
- * - **Video drops, control waits.** The video queue is bounded at
- *   [videoCapacity] and drops its *oldest* entry when full, so congestion costs
- *   us stale frames rather than latency. This is the spec's section 10.1.
+ * - **Two policies for frames.** Live streaming (a v1 receiver) uses a bounded
+ *   queue that drops its *oldest* frame when full - stale frames are worthless
+ *   to a live view. A recording ([beginRecording]) appends every frame to a
+ *   [FrameSpool] on flash instead and never drops one; the writer drains it in
+ *   order, through WiFi stalls and reconnects, and keeps going after the camera
+ *   stops until the backlog is gone.
  *
  * - **Blocking writes are the backpressure.** A congested socket blocks in
  *   write(); that is intended. Closing the socket from [stop] unblocks it with
  *   an IOException, which is how shutdown and reconnect both work.
+ *
+ * - **Commands (v2).** When the desktop greets with protocol v2, a reader
+ *   coroutine delivers each COMMAND packet's JSON to [onCommand].
  */
 class StreamClient(
     private val videoCapacity: Int = 10,
     private val controlCapacity: Int = 512
 ) {
 
-    // Kotlin permits exactly one companion object per class; the shared
-    // constants and the standalone probe both live in the one at the bottom.
-
-    private enum class Kind { FRAME, IMU, GPS }
+    private enum class Kind { FRAME, IMU, GPS, META }
 
     private class Packet(
         val bytes: ByteArray,
@@ -94,6 +106,14 @@ class StreamClient(
 
     private val videoQueue = ArrayBlockingQueue<Packet>(videoCapacity)
     private val controlQueue = ArrayBlockingQueue<Packet>(controlCapacity)
+    /** Latest-only viewfinder image; a newer one simply replaces it. */
+    private val previewSlot = AtomicReference<ByteArray?>(null)
+
+    @Volatile private var spool: FrameSpool? = null
+    private val spoolFramesSent = AtomicLong()
+
+    /** Invoked on an IO thread with each desktop command's JSON text (v2 only). */
+    @Volatile var onCommand: ((String) -> Unit)? = null
 
     private val _connection = MutableStateFlow(ConnectionInfo())
     val connection: StateFlow<ConnectionInfo> = _connection.asStateFlow()
@@ -107,20 +127,6 @@ class StreamClient(
     private val imuSamplesSent = AtomicLong()
     private val gpsFixesSent = AtomicLong()
     private val bytesSent = AtomicLong()
-
-    /**
-     * Sum and count of per-frame queue-to-wire times over the current second.
-     *
-     * The spec asks for a "ping". A round-trip ping is not measurable on this
-     * protocol: the desktop speaks exactly once, at connect, and adding a
-     * heartbeat packet would break the receiver in section 14. Opening a
-     * throwaway TCP connection each second to time the handshake would make a
-     * single-client receiver see a phantom second client. So the number
-     * reported is the one that is both measurable and more actionable for a
-     * live pipeline: how long a frame takes to get from capture to the wire.
-     * It rises exactly when the link is the bottleneck, which is what the
-     * operator needs to see.
-     */
     private val latencyNs = AtomicLong()
     private val latencyCount = AtomicLong()
 
@@ -153,6 +159,7 @@ class StreamClient(
         scope = null
         videoQueue.clear()
         controlQueue.clear()
+        previewSlot.set(null)
         _connection.value = _connection.value.copy(
             state = ConnectionState.DISCONNECTED,
             detail = "stopped"
@@ -167,16 +174,43 @@ class StreamClient(
         _stats.value = StreamStats(videoQueueCapacity = videoCapacity)
     }
 
+    // ------------------------------------------------------------ recording
+
+    /** From now on every frame goes to [s] and is never dropped. */
+    fun beginRecording(s: FrameSpool) {
+        spoolFramesSent.set(0)
+        spool = s
+    }
+
+    /**
+     * Detaches the spool once it is drained (the caller checks
+     * [recordingBacklog] first) and returns it for closing.
+     */
+    fun finishRecording(): FrameSpool? {
+        val s = spool
+        spool = null
+        return s
+    }
+
+    val isRecording: Boolean get() = spool != null
+    val recordingBacklog: Int get() = spool?.pending ?: 0
+    val recordingBacklogBytes: Long get() = spool?.pendingBytes ?: 0L
+    /** Frames of the current recording written to the socket so far. */
+    val recordingFramesSent: Long get() = spoolFramesSent.get()
+    val recordingFramesRefused: Long get() = spool?.refused ?: 0L
+    val spoolFreeBytes: Long get() = spool?.freeBytes ?: 0L
+
     // ------------------------------------------------------------- ingestion
 
     /**
-     * Hands a JPEG frame to the sender. Never blocks.
+     * Hands a JPEG frame to the sender. Never blocks for long: a recording
+     * appends it to the spool (one sequential flash write), live streaming
+     * queues it and evicts the oldest frame if the queue is full.
      *
      * [jpeg] is read synchronously into the packet and not retained, so the
-     * caller is free to hand over a reusable encoder buffer. [jpegLength] lets
-     * an over-allocated buffer be passed without a defensive copy first.
+     * caller is free to hand over a reusable encoder buffer.
      *
-     * @return false if the frame was dropped because the link could not keep up.
+     * @return false if the frame was dropped.
      */
     fun offerFrame(
         timestampMs: Long,
@@ -185,17 +219,27 @@ class StreamClient(
         jpeg: ByteArray,
         jpegLength: Int = jpeg.size
     ): Boolean {
-        val packet = Packet(
-            Protocol.encodeFrame(timestampMs, width, height, jpeg, jpegLength),
-            Kind.FRAME,
-            System.nanoTime()
-        )
+        val bytes = Protocol.encodeFrame(timestampMs, width, height, jpeg, jpegLength)
+        val sp = spool
+        if (sp != null) {
+            val ok = sp.append(bytes)
+            if (!ok) framesDropped.incrementAndGet()
+            return ok
+        }
+        val packet = Packet(bytes, Kind.FRAME, System.nanoTime())
         if (videoQueue.offer(packet)) return true
         // Full: evict the oldest frame and take its place. Losing the stale one
         // is strictly better than losing the fresh one.
         videoQueue.poll()
         framesDropped.incrementAndGet()
         return videoQueue.offer(packet)
+    }
+
+    /** Viewfinder image for the desktop while armed (v2). Latest wins. */
+    fun offerPreview(timestampMs: Long, width: Int, height: Int, jpeg: ByteArray, jpegLength: Int) {
+        previewSlot.set(
+            Protocol.encodeFrame(timestampMs, width, height, jpeg, jpegLength, Protocol.HEADER_PREVIEW)
+        )
     }
 
     /** Queues an IMU batch. Control traffic is never dropped unless truly saturated. */
@@ -222,10 +266,15 @@ class StreamClient(
         )
     }
 
+    /** Phone state for rtvio.studio (v2 only - a v1 receiver would not parse it). */
+    fun offerStatus(json: String) {
+        if (!_connection.value.remoteControl) return
+        enqueueControl(Packet(Protocol.encodeStatus(json), Kind.META, System.nanoTime()))
+    }
+
     /**
-     * Sends camera intrinsics. Called once at session start, right after the
-     * desktop handshake. These are the ground truth for the device's camera
-     * and must be used in preference to any cached or synthetic defaults.
+     * Sends camera intrinsics. Sent at connect and at each recording start,
+     * once the frame size is known.
      */
     fun offerIntrinsics(
         fxPix: Float,
@@ -242,7 +291,7 @@ class StreamClient(
         enqueueControl(
             Packet(
                 Protocol.encodeIntrinsics(fxPix, fyPix, cxPix, cyPix, k1, k2, p1, p2, k3, source),
-                Kind.IMU,  // Kind.IMU is just for the enum; only FRAME goes to videoQueue
+                Kind.META,
                 System.nanoTime()
             )
         )
@@ -278,10 +327,12 @@ class StreamClient(
                 }
                 socket = sock
 
-                val handshakeDetail = readGreeting(sock)
+                val (handshakeDetail, version) = readGreeting(sock)
                 backoff = baseBackoffMs      // a good connection resets the backoff
-                _connection.value =
-                    ConnectionInfo(ConnectionState.CONNECTED, host, port, handshakeDetail, attempt)
+                if (version >= Protocol.VERSION_REMOTE_CONTROL) startCommandReader(sock)
+                _connection.value = ConnectionInfo(
+                    ConnectionState.CONNECTED, host, port, handshakeDetail, attempt, version
+                )
 
                 // Blocks here for the life of the connection.
                 writeLoop(BufferedOutputStream(sock.getOutputStream(), SEND_BUFFER_BYTES))
@@ -298,7 +349,7 @@ class StreamClient(
             }
 
             if (!running) break
-            if (!autoReconnect) {
+            if (!autoReconnect && spool == null) {
                 _connection.value = _connection.value.copy(
                     state = ConnectionState.DISCONNECTED,
                     detail = "auto-reconnect is off"
@@ -306,32 +357,29 @@ class StreamClient(
                 running = false
                 break
             }
-            // Exponential backoff, capped: 5s, 10s, 20s, 40s, 60s, 60s ...
-            _connection.value = _connection.value.copy(
-                detail = "retrying in ${backoff / 1000}s"
-            )
-            delay(backoff)
+            // A recording always reconnects: its spooled frames still have to
+            // reach the desktop, whatever the auto-reconnect preference says.
+            val wait = if (spool != null) minOf(backoff, 2_000L) else backoff
+            _connection.value = _connection.value.copy(detail = "retrying in ${wait / 1000}s")
+            delay(wait)
             backoff = (backoff * 2).coerceAtMost(MAX_BACKOFF_MS)
         }
     }
 
     /**
-     * Reads the desktop's optional 0xAA greeting.
-     *
-     * A receiver that just starts reading without greeting us is still a working
-     * receiver, so a missing or malformed ack is reported, not treated as a
-     * failure.
+     * Reads the desktop's optional 0xAA greeting. A receiver that just starts
+     * reading without greeting us is still a working (v1) receiver.
      */
-    private fun readGreeting(sock: Socket): String = try {
+    private fun readGreeting(sock: Socket): Pair<String, Int> = try {
         sock.soTimeout = HANDSHAKE_TIMEOUT_MS
         val ack = Protocol.readHandshakeAck(DataInputStream(sock.getInputStream()))
         sock.soTimeout = 0
         when {
-            ack == null -> "connected (no handshake sent)"
-            !ack.ok -> "connected, server reported status ${ack.status}"
-            ack.protocolVersion != Protocol.VERSION ->
-                "connected, protocol v${ack.protocolVersion} (app speaks v${Protocol.VERSION})"
-            else -> "connected, protocol v${ack.protocolVersion}"
+            ack == null -> "connected (no handshake sent)" to 0
+            !ack.ok -> "connected, server reported status ${ack.status}" to ack.protocolVersion
+            ack.protocolVersion >= Protocol.VERSION_REMOTE_CONTROL ->
+                "connected to RTVIO Studio (protocol v${ack.protocolVersion})" to ack.protocolVersion
+            else -> "connected, protocol v${ack.protocolVersion} (live streaming)" to ack.protocolVersion
         }
     } catch (e: IOException) {
         try {
@@ -339,26 +387,61 @@ class StreamClient(
         } catch (ignored: IOException) {
             // Socket already dead; the write loop will surface it.
         }
-        "connected (no handshake within ${HANDSHAKE_TIMEOUT_MS}ms)"
+        "connected (no handshake within ${HANDSHAKE_TIMEOUT_MS}ms)" to 0
     }
 
-    /** Drains both queues onto the socket until the connection dies or we stop. */
+    private fun startCommandReader(sock: Socket) {
+        scope?.launch {
+            val input = DataInputStream(BufferedInputStream(sock.getInputStream()))
+            try {
+                while (isActive) {
+                    val json = Protocol.readCommand(input)
+                    try {
+                        onCommand?.invoke(json)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "command handler failed for $json", e)
+                    }
+                }
+            } catch (e: IOException) {
+                // The socket closed (stop, reconnect) or the stream went out of
+                // sync; closing makes the write loop fail and reconnect.
+                if (running) Log.w(TAG, "command reader ended: ${e.message}")
+                closeQuietly(sock)
+            }
+        }
+    }
+
+    /** Drains everything onto the socket until the connection dies or we stop. */
     private fun writeLoop(out: OutputStream) {
         out.use { stream ->
             while (running && (scope?.isActive == true)) {
-                // Control first: IMU and GPS are small and cannot be regenerated.
-                // The bounded wait on the video queue keeps this loop responsive
-                // to stop() without busy-spinning when there is nothing to send.
-                val packet = controlQueue.poll()
-                    ?: videoQueue.poll(100, TimeUnit.MILLISECONDS)
-                if (packet == null) {
+                val control = controlQueue.poll()
+                if (control != null) {
+                    stream.write(control.bytes)
+                    credit(control)
+                    continue
+                }
+                val spooled = spool?.poll()
+                if (spooled != null) {
+                    stream.write(spooled)
+                    bytesSent.addAndGet(spooled.size.toLong())
+                    framesSent.incrementAndGet()
+                    spoolFramesSent.incrementAndGet()
+                    continue
+                }
+                val preview = previewSlot.getAndSet(null)
+                if (preview != null) {
+                    stream.write(preview)
+                    bytesSent.addAndGet(preview.size.toLong())
                     stream.flush()
                     continue
                 }
-
+                // Nothing urgent: flush what was written, then wait briefly on
+                // the live video queue. The short timeout is what picks up new
+                // spool/preview/control work without busy-spinning.
+                stream.flush()
+                val packet = videoQueue.poll(20, TimeUnit.MILLISECONDS) ?: continue
                 stream.write(packet.bytes)
-                if (controlQueue.isEmpty() && videoQueue.isEmpty()) stream.flush()
-
                 credit(packet)
             }
             stream.flush()
@@ -378,6 +461,7 @@ class StreamClient(
                 imuSamplesSent.addAndGet(p.units.toLong())
             }
             Kind.GPS -> gpsFixesSent.incrementAndGet()
+            Kind.META -> Unit
         }
     }
 
@@ -415,6 +499,8 @@ class StreamClient(
             latencyMs = latencyMs,
             videoQueueDepth = videoQueue.size,
             videoQueueCapacity = videoCapacity,
+            spoolPending = recordingBacklog,
+            spoolBytes = recordingBacklogBytes,
             elapsedMs = if (startedAtMs == 0L) 0 else System.currentTimeMillis() - startedAtMs
         )
     }
@@ -463,6 +549,8 @@ class StreamClient(
                         val note = when {
                             ack == null -> "no 0xAA handshake (receiver may not send one)"
                             !ack.ok -> "handshake status ${ack.status} (error)"
+                            ack.protocolVersion >= Protocol.VERSION_REMOTE_CONTROL ->
+                                "RTVIO Studio, remote control available"
                             else -> "handshake OK, protocol v${ack.protocolVersion}"
                         }
                         Result.success("Connected in %.0f ms - %s".format(connectMs, note))

@@ -27,6 +27,7 @@ Thumbs.db
 # tool rather than tracking them in git. camera_intrinsics.json IS tracked
 # (it's the required fallback default, not an output).
 data/outputs/
+data/sessions/
 data/calib_frames/*
 !data/calib_frames/.gitkeep
 

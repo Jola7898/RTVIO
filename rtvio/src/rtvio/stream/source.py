@@ -153,6 +153,11 @@ def _serve_socket(conn, stats):
         elif header == protocol.HEADER_INTRINSICS:
             intrinsics = protocol.read_intrinsics(conn)
             yield KIND_INTRINSICS, intrinsics, t_recv
+        elif header == protocol.HEADER_STATUS:
+            # This receiver greets with v1, so a v2 app should never send
+            # STATUS here - but consuming it keeps the stream in sync if one
+            # ever does, instead of tearing the session down.
+            protocol.read_status(conn)
         else:
             raise protocol.StreamClosed("unknown packet header 0x%02X" % header)
 

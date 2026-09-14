@@ -70,6 +70,25 @@
                 tools:text="steady"
                 tools:visibility="visible" />
 
+            <!-- Recording indicator: what the desktop is doing to this phone
+                 must be obvious to whoever is holding it. -->
+            <TextView
+                android:id="@+id/overlayRec"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="top|center_horizontal"
+                android:layout_marginTop="8dp"
+                android:background="@color/stop_red"
+                android:paddingStart="12dp"
+                android:paddingTop="4dp"
+                android:paddingEnd="12dp"
+                android:paddingBottom="4dp"
+                android:textColor="@color/overlay_text"
+                android:textStyle="bold"
+                android:visibility="gone"
+                tools:text="● REC 00:12"
+                tools:visibility="visible" />
+
             <TextView
                 android:id="@+id/overlayWifiLost"
                 android:layout_width="match_parent"
@@ -203,7 +222,18 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="2"
-                android:text="@string/action_start" />
+                android:text="@string/action_connect" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnRecord"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="2"
+                android:backgroundTint="@color/stop_red"
+                android:text="@string/action_record"
+                android:visibility="gone"
+                tools:visibility="visible" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnSettings"

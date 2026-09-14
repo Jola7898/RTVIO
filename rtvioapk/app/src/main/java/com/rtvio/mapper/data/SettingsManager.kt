@@ -21,6 +21,7 @@ class SettingsManager(context: Context) {
         const val KEY_SERVER_IP = "server_ip"
         const val KEY_SERVER_PORT = "server_port"
         const val KEY_RESOLUTION = "video_resolution"
+        const val KEY_ASPECT = "video_aspect"
         const val KEY_FPS = "video_fps"
         const val KEY_JPEG_QUALITY = "jpeg_quality"
         const val KEY_IMU_RATE = "imu_rate_hz"
@@ -52,19 +53,42 @@ class SettingsManager(context: Context) {
         set(value) = prefs.edit()
             .putString(KEY_SERVER_PORT, value.coerceIn(1024, 65535).toString()).apply()
 
-    /** Capture resolution as width x height. */
-    val resolution: Size
-        get() = when (prefs.getString(KEY_RESOLUTION, "1080p")) {
-            "720p" -> Size(1280, 720)
-            else -> Size(1920, 1080)
+    /**
+     * "720p" or "1080p" - the long edge of the frame (1280 / 1920 px). 720p is
+     * the default because the desktop's VGGT resizes every frame to 518 px
+     * anyway: a bigger frame only costs encode time and WiFi bandwidth, which
+     * are exactly what limit how many frames reach the desktop.
+     */
+    var resolutionKey: String
+        get() = prefs.getString(KEY_RESOLUTION, "720p") ?: "720p"
+        set(value) {
+            if (value == "720p" || value == "1080p") prefs.edit().putString(KEY_RESOLUTION, value).apply()
         }
 
-    val targetFps: Int
-        get() = prefs.getString(KEY_FPS, "30")?.toIntOrNull() ?: 30
+    /**
+     * 4:3 is the camera sensor's native shape - the full field of view. 16:9
+     * crops it. More view per frame means more overlap between frames, which
+     * reconstruction wants, so 4:3 is the default.
+     */
+    var aspect43: Boolean
+        get() = prefs.getString(KEY_ASPECT, "4:3") != "16:9"
+        set(value) = prefs.edit().putString(KEY_ASPECT, if (value) "4:3" else "16:9").apply()
 
-    /** JPEG quality percent, 30-90. */
-    val jpegQuality: Int
-        get() = prefs.getInt(KEY_JPEG_QUALITY, 70).coerceIn(30, 90)
+    /** Requested capture size (landscape, sensor orientation). */
+    val resolution: Size
+        get() {
+            val long = if (resolutionKey == "1080p") 1920 else 1280
+            return Size(long, if (aspect43) long * 3 / 4 else long * 9 / 16)
+        }
+
+    var targetFps: Int
+        get() = prefs.getString(KEY_FPS, "30")?.toIntOrNull() ?: 30
+        set(value) = prefs.edit().putString(KEY_FPS, value.coerceIn(5, 60).toString()).apply()
+
+    /** JPEG quality percent, 30-95. */
+    var jpegQuality: Int
+        get() = prefs.getInt(KEY_JPEG_QUALITY, 85).coerceIn(30, 95)
+        set(value) = prefs.edit().putInt(KEY_JPEG_QUALITY, value.coerceIn(30, 95)).apply()
 
     /** Requested inertial sampling rate in Hz. */
     val imuRateHz: Int

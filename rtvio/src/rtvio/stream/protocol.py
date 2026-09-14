@@ -14,6 +14,7 @@ wrong is the single most common bug when writing a receiver:
 always arrives split across segments; reading a length field and calling
 recv once works on localhost and fails over WiFi.
 """
+import json
 import struct
 from typing import NamedTuple
 
@@ -21,9 +22,21 @@ HEADER_FRAME = 0xFF
 HEADER_IMU = 0xFE
 HEADER_GPS = 0xFD
 HEADER_INTRINSICS = 0xFC
+HEADER_STATUS = 0xFB           # phone -> desktop, JSON (protocol v2 only)
+HEADER_PREVIEW = 0xFA          # phone -> desktop, same layout as FRAME; a
+                               # low-rate viewfinder image sent while armed,
+                               # never recorded (protocol v2 only)
+HEADER_COMMAND = 0xC0          # desktop -> phone, JSON (protocol v2 only)
 HEADER_HANDSHAKE_ACK = 0xAA
 
+# v1: the phone streams as soon as it connects and never reads another byte
+# after the handshake. v2 (rtvio.studio): the phone connects "armed", streams
+# only between a START and a STOP command, and reports its state in STATUS
+# packets. The app decides which behaviour to use from the version in the
+# handshake, so a v1 receiver (live_pipeline.py, mock_receiver.py) keeps
+# working with the new app unchanged.
 PROTOCOL_VERSION = 1
+STUDIO_PROTOCOL_VERSION = 2
 STATUS_OK = 0
 
 HANDSHAKE_FMT = ">BIB"          # header, version, status
@@ -128,11 +141,60 @@ def recv_exact(sock, count):
     return b"".join(chunks)
 
 
-def encode_handshake():
-    """Desktop -> phone greeting. The app reads exactly these 6 bytes and
-    never expects another inbound byte (StreamClient.readGreeting), so do
-    not append to this without changing the app."""
-    return struct.pack(HANDSHAKE_FMT, HEADER_HANDSHAKE_ACK, PROTOCOL_VERSION, STATUS_OK)
+def encode_handshake(version=PROTOCOL_VERSION):
+    """Desktop -> phone greeting. A v1 app reads exactly these 6 bytes and
+    never expects another inbound byte. Only send version=2 from a receiver
+    that also speaks COMMAND/STATUS (rtvio.studio): a v2-aware app treats
+    that version as "wait for a START command" instead of streaming."""
+    return struct.pack(HANDSHAKE_FMT, HEADER_HANDSHAKE_ACK, version, STATUS_OK)
+
+
+# JSON-bodied control packets (v2). u8 header, u16 length, UTF-8 JSON object.
+# JSON rather than fixed structs because these carry a growing set of
+# optional fields (capture settings, stats) and are sent a few times a
+# second at most - the byte-exact fixed layouts above are for the hot path.
+JSON_LEN_FMT = ">H"
+MAX_JSON_BYTES = 65535
+
+
+def _encode_json(header, obj):
+    body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
+    if len(body) > MAX_JSON_BYTES:
+        raise ValueError("control packet body is %d bytes, max %d" % (len(body), MAX_JSON_BYTES))
+    return bytes([header]) + struct.pack(JSON_LEN_FMT, len(body)) + body
+
+
+def _read_json(sock):
+    (n,) = struct.unpack(JSON_LEN_FMT, recv_exact(sock, 2))
+    body = recv_exact(sock, n) if n else b"{}"
+    try:
+        obj = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
+        raise StreamClosed("malformed JSON control packet: %s" % e)
+    if not isinstance(obj, dict):
+        raise StreamClosed("control packet body is not a JSON object")
+    return obj
+
+
+def encode_command(obj):
+    """Desktop -> phone. obj["cmd"] is one of "start", "stop", "ping"."""
+    return _encode_json(HEADER_COMMAND, obj)
+
+
+def encode_status(obj):
+    """Phone -> desktop. Used by the phone simulator and the tests; the real
+    encoder is Protocol.encodeStatus in the app."""
+    return _encode_json(HEADER_STATUS, obj)
+
+
+def read_command(sock):
+    """Body of a COMMAND packet whose header byte was already consumed."""
+    return _read_json(sock)
+
+
+def read_status(sock):
+    """Body of a STATUS packet whose header byte was already consumed."""
+    return _read_json(sock)
 
 
 # ------------------------------------------------------------------ decode --
@@ -202,6 +264,8 @@ def read_packet(sock):
         return header, read_gps(sock)
     if header == HEADER_INTRINSICS:
         return header, read_intrinsics(sock)
+    if header == HEADER_STATUS:
+        return header, read_status(sock)
     raise StreamClosed(f"unknown packet header 0x{header:02X}")
 
 

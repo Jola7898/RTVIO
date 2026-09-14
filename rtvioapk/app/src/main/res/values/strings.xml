@@ -9,6 +9,22 @@
     <!-- Main controls -->
     <string name="action_start">START STREAMING</string>
     <string name="action_stop">STOP STREAMING</string>
+    <string name="action_connect">CONNECT</string>
+    <string name="action_cancel_connect">CANCEL</string>
+    <string name="action_disconnect">DISCONNECT</string>
+    <string name="action_record">● REC</string>
+    <string name="action_stop_record">■ STOP</string>
+    <string name="action_uploading">UPLOADING %1$d</string>
+    <string name="state_armed">READY</string>
+    <string name="state_recording">RECORDING</string>
+    <string name="state_finishing">UPLOADING</string>
+    <string name="mode_remote_armed">Remote (RTVIO Studio): ready</string>
+    <string name="mode_remote_recording">Remote: recording %1$s</string>
+    <string name="mode_remote_finishing">Remote: uploading %1$d queued frames</string>
+    <string name="mode_live">Live stream (legacy receiver)</string>
+    <string name="disconnect_unsent_title">Frames not uploaded yet</string>
+    <string name="disconnect_unsent_message">%1$d recorded frames are still waiting to be sent. Disconnecting now discards them.</string>
+    <string name="disconnect_anyway">Disconnect anyway</string>
     <string name="action_settings">SETTINGS</string>
     <string name="menu_specs">Device specs</string>
     <string name="menu_settings">Settings</string>
@@ -77,6 +93,7 @@
 
     <!-- Settings: video -->
     <string name="pref_resolution">Video resolution</string>
+    <string name="pref_aspect">Aspect ratio</string>
     <string name="pref_fps">Video frame rate</string>
     <string name="pref_quality">JPEG quality</string>
 

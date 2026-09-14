@@ -164,6 +164,62 @@ class ProtocolTest {
         assertNull(Protocol.readHandshakeAck(DataInputStream(ByteArrayInputStream(truncated))))
     }
 
+    // ------------------------------------------------------------ protocol v2
+    // Byte layouts rtvio/src/rtvio/stream/protocol.py reads (read_status,
+    // read_frame for PREVIEW) and writes (encode_command).
+
+    @Test
+    fun `status packet is u8 header, u16 length, utf8 json`() {
+        val json = """{"state":"armed","model":"Pixel ✓"}"""
+        val packet = Protocol.encodeStatus(json)
+        val body = json.toByteArray(Charsets.UTF_8)
+        assertEquals(3 + body.size, packet.size)
+        val b = reader(packet)
+        assertEquals(0xFB, b.get().toInt() and 0xFF)
+        assertEquals(body.size, b.short.toInt() and 0xFFFF)
+        val got = ByteArray(body.size).also { b.get(it) }
+        assertTrue(body.contentEquals(got))
+    }
+
+    @Test
+    fun `preview packet is a frame packet with its own header`() {
+        val jpeg = byteArrayOf(1, 2, 3, 4, 5)
+        val packet = Protocol.encodeFrame(42L, 960, 1280, jpeg, header = Protocol.HEADER_PREVIEW)
+        assertEquals(Protocol.FRAME_OVERHEAD + jpeg.size, packet.size)
+        val b = reader(packet)
+        assertEquals(0xFA, b.get().toInt() and 0xFF)
+        assertEquals(42L, b.long)
+        assertEquals(960, b.int)
+        assertEquals(1280, b.int)
+        assertEquals(jpeg.size, b.int)
+    }
+
+    @Test
+    fun `command packet from the desktop is read back`() {
+        val json = """{"cmd":"start","session":"20260914-190000","fps":30}"""
+        val body = json.toByteArray(Charsets.UTF_8)
+        val bytes = ByteBuffer.allocate(3 + body.size).order(ByteOrder.BIG_ENDIAN)
+            .put(0xC0.toByte()).putShort(body.size.toShort()).put(body).array()
+        val input = DataInputStream(ByteArrayInputStream(bytes + bytes))
+        assertEquals(json, Protocol.readCommand(input))
+        assertEquals("a second packet on the same stream", json, Protocol.readCommand(input))
+    }
+
+    @Test(expected = java.io.IOException::class)
+    fun `a non-command byte from the desktop is a stream error`() {
+        Protocol.readCommand(DataInputStream(ByteArrayInputStream(byteArrayOf(0x42, 0, 0))))
+    }
+
+    @Test
+    fun `only a v2 greeting turns on remote control`() {
+        val v1 = com.rtvio.mapper.net.ConnectionInfo(com.rtvio.mapper.net.ConnectionState.CONNECTED, serverVersion = 1)
+        val v2 = com.rtvio.mapper.net.ConnectionInfo(com.rtvio.mapper.net.ConnectionState.CONNECTED, serverVersion = 2)
+        val v2down = v2.copy(state = com.rtvio.mapper.net.ConnectionState.ERROR)
+        assertEquals(false, v1.remoteControl)
+        assertEquals(true, v2.remoteControl)
+        assertEquals(false, v2down.remoteControl)
+    }
+
     /** The count field is a signed 16-bit int; overflowing it must be loud. */
     @Test(expected = IllegalArgumentException::class)
     fun `oversized imu batch is rejected`() {

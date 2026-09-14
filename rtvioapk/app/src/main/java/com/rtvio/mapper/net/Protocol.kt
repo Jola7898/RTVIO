@@ -19,13 +19,30 @@ import java.nio.ByteOrder
  */
 object Protocol {
 
-    const val VERSION = 1
+    /**
+     * v1: stream from the moment the socket connects; nothing is ever read
+     * after the handshake. v2 (the desktop's rtvio.studio): connect "armed"
+     * and stream only between START and STOP commands, reporting state in
+     * STATUS packets. The app picks the behaviour from the version the
+     * desktop greets with, so v1 receivers keep working unchanged.
+     */
+    const val VERSION = 2
+    const val VERSION_REMOTE_CONTROL = 2
 
     const val HEADER_FRAME: Byte = 0xFF.toByte()
     const val HEADER_IMU: Byte = 0xFE.toByte()
     const val HEADER_GPS: Byte = 0xFD.toByte()
     const val HEADER_INTRINSICS: Byte = 0xFC.toByte()
+    /** Phone -> desktop, JSON body (v2 only). */
+    const val HEADER_STATUS: Byte = 0xFB.toByte()
+    /** Phone -> desktop, frame layout, a viewfinder image never recorded (v2 only). */
+    const val HEADER_PREVIEW: Byte = 0xFA.toByte()
+    /** Desktop -> phone, JSON body (v2 only). */
+    const val HEADER_COMMAND: Byte = 0xC0.toByte()
     const val HEADER_HANDSHAKE_ACK: Byte = 0xAA.toByte()
+
+    /** Largest JSON body a u16 length field can carry. */
+    const val MAX_JSON_BYTES = 65535
 
     /** Bytes a frame packet costs on top of the JPEG payload. */
     const val FRAME_OVERHEAD = 1 + 8 + 4 + 4 + 4      // 21
@@ -54,10 +71,11 @@ object Protocol {
         width: Int,
         height: Int,
         jpeg: ByteArray,
-        jpegLength: Int = jpeg.size
+        jpegLength: Int = jpeg.size,
+        header: Byte = HEADER_FRAME
     ): ByteArray {
         val buf = ByteBuffer.allocate(FRAME_OVERHEAD + jpegLength).order(ByteOrder.BIG_ENDIAN)
-        buf.put(HEADER_FRAME)
+        buf.put(header)
         buf.putLong(timestampMs)
         buf.putInt(width)
         buf.putInt(height)
@@ -157,6 +175,40 @@ object Protocol {
         buf.putShort(sourceBytes.size.toShort())
         buf.put(sourceBytes)
         return buf.array()
+    }
+
+    /**
+     * struct StatusPacket { u8 0xFB; u16 len; u8 json[len]; }
+     *
+     * [json] is built by the caller (org.json at runtime); this only frames
+     * it, which keeps the unit-testable part free of the android.jar stubs.
+     */
+    fun encodeStatus(json: String): ByteArray {
+        val body = json.toByteArray(Charsets.UTF_8)
+        require(body.size <= MAX_JSON_BYTES) { "status body of ${body.size} bytes exceeds u16" }
+        return ByteBuffer.allocate(3 + body.size).order(ByteOrder.BIG_ENDIAN)
+            .put(HEADER_STATUS)
+            .putShort(body.size.toShort())
+            .put(body)
+            .array()
+    }
+
+    /**
+     * Reads one desktop -> phone packet: u8 0xC0; u16 len; u8 json[len].
+     * Blocks until a full packet arrives. Returns the JSON text; throws
+     * [java.io.IOException] on a closed stream or an unexpected header (the
+     * desktop sends nothing else after the handshake, so anything else means
+     * the stream is out of sync).
+     */
+    fun readCommand(input: DataInputStream): String {
+        val header = input.readByte()
+        if (header != HEADER_COMMAND) {
+            throw java.io.IOException("unexpected packet 0x%02X from desktop".format(header.toInt() and 0xFF))
+        }
+        val len = input.readUnsignedShort()
+        val body = ByteArray(len)
+        input.readFully(body)
+        return String(body, Charsets.UTF_8)
     }
 
     /** Result of reading the desktop's greeting. */
