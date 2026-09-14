@@ -106,6 +106,55 @@ the result. That confirms the real socket/app path behaves like the
 synthetic tests above - the one thing this session couldn't verify without
 your hardware.
 
+## Item 2: Processing-speed benchmark (DONE) - a real, important finding
+
+Added per-window timing instrumentation to `_reconstruct_core` and fixed
+`_write_outputs`'s "budget" line, which previously divided wall time by a
+flat 900s regardless of the input video's actual length (meaningless on
+any test clip that isn't ~10 minutes long, which none of this pipeline's
+real test clips have been). It now reports realtime factor and a proper
+projection to a 10-minute-equivalent video:
+
+```
+Wall time: 640.0 s for 45.0 s of input video (0.07x realtime). Projected
+for a 10-minute video at this rate: 8533 s (9.48x SIH26158's 15-minute
+budget)
+Per-window time: min=19.2s mean=19.4s max=25.0s (n=30 windows)
+```
+
+**Real benchmark run** (not extrapolated from an 8-second clip like every
+previous number in this project): 91 frames cycled from real footage at
+the pipeline's actual default `SAMPLE_FPS=2.0` (previous timing numbers all
+used `SAMPLE_FPS=25.0`, which nobody would actually use for a real
+10-minute video), `use_masking=False` to isolate core VGGT/export cost,
+`WINDOW_FRAMES=4`/`OVERLAP=1` (the real defaults) - 30 real windows, 640s
+wall time. Preserved at `rtvio/data/outputs/speed_benchmark/`.
+
+**Finding**: at this GPU's measured ~19.4s/window average and the
+pipeline's default settings, a real 10-minute video projects to **~142
+minutes (9.48x over SIH26158's 15-minute budget)**. To hit the budget on
+*this* GPU alone (no hardware change), `SAMPLE_FPS` would need to drop from
+2.0 to **~0.23** (one sampled frame every ~4.3s instead of every 0.5s) -
+an ~8.6x reduction in temporal density, which would very likely hurt
+Reconstruction Accuracy/Model Completeness (fewer, more widely-spaced
+frames mean less overlap and coarser motion estimation) in exchange for
+meeting the Processing Speed criterion - a real trade-off, not a free fix.
+**Not changed this session** (SAMPLE_FPS stays at 2.0): changing the
+default based on a projection, without measuring the actual quality
+impact of sparser sampling, would be guessing at one number to fix another
+without verifying either.
+
+**What this means for hardware**: closing a ~9.5x gap needs either faster
+per-window inference (the RTX 5070 Ti - bf16 already auto-detected,
+untested magnitude of speedup) or a larger `WINDOW_FRAMES` amortizing
+fixed per-call overhead across more frames per forward pass (only possible
+with more VRAM) - both require the new hardware to actually measure, which
+still isn't available this session.
+
+**Files changed**: `rtvio/src/rtvio/vggt_reconstruct.py` (timing
+instrumentation in `_reconstruct_core`, budget-line fix in
+`_write_outputs`).
+
 ## Item 3: GPS-noise robustness test (DONE) - a real, important finding
 
 New `rtvio/tests/test_georeference_vggt.py` (6/6 passing, CPU-only, no GPU
@@ -209,3 +258,60 @@ a real frame, which is what the original plan's Day-2 checkpoint actually
 asked for - "before/after showing the mask actually removing them" - but a
 full `reconstruct()` run with it enabled, to see the effect on final point
 count/cloud quality, would be a good follow-up given more GPU time).
+
+## Item 5: Minimal web viewer (DONE)
+
+New `rtvio/src/rtvio/view_output.py` - a static file server (Python
+stdlib `http.server`, no new dependency) plus one injected HTML page using
+three.js (same r128/global-script convention as the existing
+`viz_server.py`, for consistency - not a repurpose of it, since that
+module is built entirely around a live SSE push from a running
+reconstruction and there's nothing live here, just a finished `.glb`).
+`GLTFLoader` loads `mesh_poisson.glb`, auto-fits the camera/grid/lights to
+the mesh's own bounding box (works whether the scene is real-world-metre
+scale or VGGT's small unanchored relative-mode units), `OrbitControls` for
+interaction.
+
+Usage: `python -m rtvio.view_output <out_dir> [--port 8080] [--open]`.
+
+**Bug found and fixed while verifying**: the page template used Python
+`%`-style formatting, but its CSS/JS legitimately contains literal `%`
+characters (`height:100%`, etc.) that `%`-formatting misparses as format
+specifiers - crashed immediately on startup (`ValueError: unsupported
+format character ';'`). Switched to plain `.replace()` substitution, which
+can't collide with template content the way `%`/`.format()` can.
+
+**Verification performed**: started the server against a real output
+directory (`rtvio/data/outputs/masking_test/`) and checked the actual HTTP
+responses - `/` returns 200 with the right `text/html` content-type and
+non-empty body, `/mesh_poisson.glb` returns 200 with the correct
+`model/gltf-binary` content-type and byte-exact file size, a nonexistent
+file correctly 404s. **Not done**: an actual visual render/screenshot in a
+browser (no browser-automation tool was available this session, and it
+declined to connect one) - the three.js loader/camera-fit logic is
+reviewed and follows the same pattern `viz_server.py` already uses
+successfully, but a human should open the page once to be sure. Quick
+check for whoever does that: `python -m rtvio.view_output
+rtvio/data/outputs/full_drone_test_201frames --open`.
+
+**Files changed**: new `rtvio/src/rtvio/view_output.py`.
+
+## Session summary
+
+All 5 plan items done and verified to the extent possible without the
+user's hardware (real drone/GCS telemetry, the RTX 5070 Ti, and a browser
+for a final visual check on item 5). Two genuinely important findings this
+session, both worth carrying into any demo/writeup:
+
+1. **Processing speed is the biggest risk right now** (item 2): ~9.5x over
+   budget on this GPU at real-world settings. This is a hardware/tuning
+   problem, not a bug - re-measure immediately once the 5070 Ti is
+   available, that's the single most informative thing to do next.
+2. **Georeferencing accuracy needs more than per-window GPS alone** (item
+   3): even good consumer GPS noise (1m) already exceeds the ≤1m target at
+   the pipeline's real window size. RTK/PPK (already a PS-optional input)
+   is the strongest lever found.
+
+One real fix landed as a side effect of testing, not planned work: a
+crash in `SessionRecorder.on_session_end` for short/IMU-less sessions
+(item 1's verification surfaced it).
