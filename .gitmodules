@@ -1,6 +1,3 @@
-[submodule "rtviomap/lingbot-map"]
-	path = rtviomap/lingbot-map
-	url = https://github.com/Robbyant/lingbot-map.git
 [submodule "rtvio/third_party/vggt"]
 	path = rtvio/third_party/vggt
 	url = https://github.com/facebookresearch/vggt.git

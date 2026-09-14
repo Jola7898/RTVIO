@@ -1,0 +1,5 @@
+# Dropped in favor of the VGGT batch pipeline (rtvio/src/rtvio/vggt_reconstruct.py) -
+# see rtviomap/session.md for why it existed. Kept on disk, not in git: still a
+# working WSL2 setup + adapter scaffold if the LingBot-Map direction is revisited,
+# but not the chosen path going forward.
+/rtviomap/
