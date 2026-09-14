@@ -30,6 +30,10 @@ data/outputs/
 data/calib_frames/*
 !data/calib_frames/.gitkeep
 
+# VGGT-1B checkpoint (~5GB, downloaded not authored - see vggt_reconstruct.py's
+# _load_vggt) - too big for git, re-download from huggingface.co/facebook/VGGT-1B
+data/models/*.pt
+
 # Test/tool artifacts
 *.las
 *.bak

@@ -212,8 +212,12 @@ class Tracker:
         self.pose_history = []    # (frame_idx, R, p) for the BA window
 
     # ---------------------------------------------------------- helpers --
-    def _detect_new_features(self, gray):
+    def _detect_new_features(self, gray, static_mask=None):
         mask = np.full(gray.shape, 255, dtype=np.uint8)
+        # Apply AI static mask: zero out regions that are dynamic
+        if static_mask is not None:
+            mask[~static_mask] = 0
+
         for (x, y) in self.active_px:
             cv2.circle(mask, (int(x), int(y)), self.NEW_FEATURE_MIN_DIST_PX, 0, -1)
         kps = self.orb.detect(gray, mask)

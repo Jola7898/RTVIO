@@ -140,8 +140,18 @@ class SessionRecorder:
             "late_dropped": stats.late_dropped,
             "imu_samples": stats.imu_samples,
             "gps_fixes": stats.gps_fixes,
-            "boot_to_wall_s": getattr(self.clock, "boot_to_wall_s", None),
-            "wall_t0_s": getattr(self.clock, "wall_t0_s", None),
+            # self.clock only exists once on_session_start has fired -
+            # StreamSession.run() skips it entirely when the stream never
+            # establishes a usable clock offset (e.g. zero IMU samples: see
+            # its "stream carried no usable pairing" SystemExit path), and
+            # still calls on_session_end right before raising that. A short
+            # or IMU-less test recording is exactly the first thing someone
+            # verifying --record-only would try - losing the fixture (frames/
+            # GPS this recorder DID capture) to an AttributeError here on top
+            # of the SystemExit that's coming anyway would hide real captured
+            # data behind a confusing crash.
+            "boot_to_wall_s": getattr(getattr(self, "clock", None), "boot_to_wall_s", None),
+            "wall_t0_s": getattr(getattr(self, "clock", None), "wall_t0_s", None),
         })
         msg = "fixture written to %s (%d frames, %d imu, %d gps)" % (
             self.out_dir, self.n_frames, len(self.imu), len(self.gps))

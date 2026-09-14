@@ -90,6 +90,7 @@ from .meshing import build_grid, write_textured_mesh
 from .so3 import level_and_align_attitude
 from .stream.geodesy import latlon_to_enu, AltitudeSanity
 from .tracking import Tracker
+from .ai_masking import DynamicMasker
 
 # Attitude initialisation ----------------------------------------------------
 # Yaw is the one component neither the accelerometer nor a GPS position fix can
@@ -251,6 +252,8 @@ class LiveReconstructor:
         # the model is internally fine and in the wrong place.
         self.ref = None
         self.alt_sanity = AltitudeSanity()
+        
+        self.masker = DynamicMasker()
 
         self.initialized = False
         self._pending = []             # (kind, args) buffered until yaw is known
@@ -1102,6 +1105,16 @@ def build_argparser():
     ap.add_argument("--record", metavar="DIR",
                     help="also write a replayable fixture here. A sibling subscriber; "
                          "it cannot affect the model")
+    ap.add_argument("--record-only", action="store_true",
+                    help="use with --record: skip LiveReconstructor entirely and only "
+                         "run SessionRecorder, so the socket thread does nothing per "
+                         "packet but write-through to the recorder's bounded queue. "
+                         "LiveReconstructor's per-frame tracking/dense-stereo cost is "
+                         "exactly what backpressures the phone (see vggt_reconstruct.py's "
+                         "module docstring and the plan doc's finding #2) - pointless to "
+                         "pay that cost while capturing a fixture for later offline VGGT "
+                         "reconstruction (see rtvio.vggt_reconstruct.reconstruct_from_recording), "
+                         "whose own output is unaffected by anything LiveReconstructor did.")
     ap.add_argument("--replay", metavar="DIR",
                     help="drive from a recorded fixture instead of a socket. Debugging "
                          "only - a model built this way is a model built for debugging")
@@ -1143,17 +1156,30 @@ def _resolve_stereo_geometry(args):
 
 def main():
     args = build_argparser().parse_args()
-    _resolve_stereo_geometry(args)
-    out_dir = os.path.join(args.out_root, "output_%s" % args.run_id)
+    if args.record_only and not args.record:
+        raise SystemExit("--record-only requires --record DIR (nothing to skip to "
+                          "otherwise)")
     intrinsics = json.load(open(args.intrinsics))
 
-    recon = LiveReconstructor(out_dir, intrinsics, args)
-    subscribers = [recon]
-    if args.record:
+    if args.record_only:
+        # No LiveReconstructor at all - see --record-only's help text. Skips
+        # _resolve_stereo_geometry too: its baseline/depth gates only matter
+        # to the tracker/dense-stereo this mode doesn't run.
         from .stream.recorder import SessionRecorder
-        subscribers.append(SessionRecorder(args.record, intrinsics))
-        print("recording a fixture to %s (sibling subscriber; cannot affect the model)"
-              % args.record)
+        subscribers = [SessionRecorder(args.record, intrinsics)]
+        print("RECORD-ONLY MODE: writing a fixture to %s. LiveReconstructor is not "
+              "running - use rtvio.vggt_reconstruct.reconstruct_from_recording on "
+              "this directory afterward." % args.record)
+    else:
+        _resolve_stereo_geometry(args)
+        out_dir = os.path.join(args.out_root, "output_%s" % args.run_id)
+        recon = LiveReconstructor(out_dir, intrinsics, args)
+        subscribers = [recon]
+        if args.record:
+            from .stream.recorder import SessionRecorder
+            subscribers.append(SessionRecorder(args.record, intrinsics))
+            print("recording a fixture to %s (sibling subscriber; cannot affect the model)"
+                  % args.record)
 
     if args.replay:
         from .stream.replay import ReplayPacketSource

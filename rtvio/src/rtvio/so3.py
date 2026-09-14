@@ -90,3 +90,81 @@ def level_and_align_attitude(accel_first_body, course_heading_rad=None,
         U, _, Vt = np.linalg.svd(R)
         R = U @ Vt
     return R
+
+
+def umeyama_alignment(src, dst, with_scale=True):
+    """Least-squares similarity transform (rotation R, translation t, scale
+    s) mapping `src` points onto `dst` points in the sense of minimizing
+    sum ||s*R@src_i + t - dst_i||^2 (Umeyama, 1991 - the same closed-form
+    SVD solution ORB-SLAM/evo use for trajectory alignment).
+
+    Added for the VGGT batch pipeline (see docs/dev_notes for the pivot
+    away from the removed EKF): VGGT's predicted camera centers live in an
+    arbitrary per-window frame (origin/scale/orientation set by the model,
+    not geography), so georeferencing means fitting this transform between
+    VGGT's camera-center trajectory and the GPS-derived ENU positions for
+    the same frames, then applying it to that window's whole point cloud -
+    the batch-mode equivalent of what course_over_ground/GPS-reanchoring
+    did for the old per-frame pose.
+
+    src, dst: (N,3) arrays, N>=3 and not collinear for a well-posed R.
+    with_scale=False pins scale to 1 (use when src is already known-metric
+    and only orientation/origin are unknown).
+
+    Returns (s, R, t) such that dst ~= s * (R @ src.T).T + t.
+    """
+    src = np.asarray(src, dtype=np.float64)
+    dst = np.asarray(dst, dtype=np.float64)
+    n = src.shape[0]
+    mu_src, mu_dst = src.mean(axis=0), dst.mean(axis=0)
+    src_c, dst_c = src - mu_src, dst - mu_dst
+
+    cov = (dst_c.T @ src_c) / n
+    U, D, Vt = np.linalg.svd(cov)
+    S = np.eye(3)
+    if np.linalg.det(U) * np.linalg.det(Vt) < 0:
+        S[2, 2] = -1  # reflection correction, keeps R a proper rotation
+    R = U @ S @ Vt
+
+    if with_scale:
+        var_src = (src_c ** 2).sum() / n
+        s = float(np.trace(np.diag(D) @ S) / var_src) if var_src > 1e-12 else 1.0
+    else:
+        s = 1.0
+
+    t = mu_dst - s * (R @ mu_src)
+    return s, R, t
+
+
+def rigid_from_pose_pair(R_dst, p_dst, R_new, p_new):
+    """Closed-form rigid transform (R, t; scale fixed at 1) mapping a SINGLE
+    camera pose (R_new, p_new) onto its known pose in another frame
+    (R_dst, p_dst) - the same physical camera, seen in two different
+    coordinate frames.
+
+    Added for the VGGT multi-window pipeline's GPS-less case: with no GPS,
+    umeyama_alignment's >=3-point requirement would force a large window
+    overlap (expensive - see vggt_reconstruct.py's WINDOW_OVERLAP). But a
+    full 6-DOF camera pose (rotation AND position, not just position) is
+    itself already 6 constraints - exactly enough to pin a rigid transform
+    - so a single shared frame between consecutive windows is sufficient
+    when its full pose is used, not just its position. This is what lets
+    WINDOW_OVERLAP stay at 1 instead of needing >=3.
+
+    R_dst/R_new: 3x3 cam-to-world rotations of the SAME camera in the
+    destination/new frame. p_dst/p_new: its 3-vector position in each.
+    Returns (R, t) such that R @ p_new + t == p_dst and R @ R_new == R_dst.
+
+    Scale is fixed at 1 rather than estimated (unlike umeyama_alignment)
+    because a single point pair has no second distance to form a ratio
+    from - this assumes VGGT's per-window scale is self-consistent (its
+    README's "metric" claim), which is unverified across window boundaries
+    and is the main known weakness of this chaining approach: any real
+    per-window scale drift accumulates uncorrected, the same failure shape
+    as uncorrected IMU dead-reckoning (see CHANGELOG.md) - just for scale
+    instead of position. Worth re-measuring once real GPS is available to
+    cross-check, per the plan's checkpoints.
+    """
+    R = R_dst @ R_new.T
+    t = p_dst - R @ p_new
+    return R, t
