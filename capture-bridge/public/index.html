@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Drone Telemetry Tap</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0f14;
+    --panel: #121821;
+    --panel-2: #171f2b;
+    --border: #223042;
+    --text: #e7edf5;
+    --muted: #8ea0b5;
+    --good: #35d18a;
+    --bad: #ff5d5d;
+    --accent: #4ea1ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.4 -apple-system, Segoe UI, Roboto, sans-serif;
+    padding: 20px;
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 12px; }
+  .status {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border);
+    background: var(--panel); font-size: 12px; margin-bottom: 20px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--bad); }
+  .dot.on { background: var(--good); }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .card h2 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--muted); margin: 0 0 10px;
+  }
+  .row { display: flex; justify-content: space-between; padding: 3px 0; font-size: 13px; }
+  .row span:first-child { color: var(--muted); }
+  .row span:last-child { font-variant-numeric: tabular-nums; }
+  .big { font-size: 22px; font-weight: 600; }
+  #log-wrap { margin-top: 20px; }
+  #log {
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 10px 12px; height: 220px; overflow-y: auto;
+    font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--muted);
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+  <h1>Drone Telemetry Tap</h1>
+  <p class="sub">Standalone MAVLink capture bridge — independent of iDronam. Feeds this page + <code>/api/latest</code>.</p>
+  <div class="status"><span class="dot" id="connDot"></span><span id="connText">connecting…</span></div>
+
+  <div class="card" style="margin-bottom:12px;">
+    <h2>Camera</h2>
+    <img id="video" src="/video.mjpeg" alt="Camera feed unavailable" style="width:100%;max-width:640px;border-radius:6px;display:block;background:var(--panel-2);"
+      onerror="this.onerror=null;this.style.display='none';document.getElementById('video-err').hidden=false;" />
+    <p id="video-err" hidden style="color:var(--bad);font-size:12px;margin:8px 0 0;">
+      Camera feed unavailable — check the drone is streaming RTSP on the configured camera_port/camera_path.
+    </p>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Heartbeat</h2>
+      <div class="row"><span>Mode</span><span id="hb-mode">—</span></div>
+      <div class="row"><span>Armed</span><span id="hb-armed">—</span></div>
+      <div class="row"><span>Autopilot</span><span id="hb-ap">—</span></div>
+      <div class="row"><span>Msgs/sec</span><span id="hb-rate">0</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Position (GLOBAL_POSITION_INT)</h2>
+      <div class="row"><span>Lat</span><span id="pos-lat">—</span></div>
+      <div class="row"><span>Lon</span><span id="pos-lon">—</span></div>
+      <div class="row"><span>Alt (rel, m)</span><span id="pos-alt">—</span></div>
+      <div class="row"><span>Heading (°)</span><span id="pos-hdg">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>GPS Fix (GPS_RAW_INT)</h2>
+      <div class="row"><span>Fix type</span><span id="gps-fix">—</span></div>
+      <div class="row"><span>Satellites</span><span id="gps-sats">—</span></div>
+      <div class="row"><span>HDOP</span><span id="gps-eph">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Attitude</h2>
+      <div class="row"><span>Roll (°)</span><span id="att-roll">—</span></div>
+      <div class="row"><span>Pitch (°)</span><span id="att-pitch">—</span></div>
+      <div class="row"><span>Yaw (°)</span><span id="att-yaw">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Battery</h2>
+      <div class="row big" id="batt-pct">—%</div>
+      <div class="row"><span>Voltage (V)</span><span id="batt-v">—</span></div>
+      <div class="row"><span>Current (A)</span><span id="batt-a">—</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Sys Status</h2>
+      <div class="row"><span>Voltage (V)</span><span id="sys-v">—</span></div>
+      <div class="row"><span>Load (%)</span><span id="sys-load">—</span></div>
+      <div class="row"><span>Comm drop rate</span><span id="sys-drop">—</span></div>
+    </div>
+  </div>
+
+  <div id="log-wrap">
+    <h2 style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);">Live feed (all messages)</h2>
+    <div id="log"></div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
+    const dot = document.getElementById("connDot");
+    const connText = document.getElementById("connText");
+    const log = document.getElementById("log");
+    let msgCount = 0;
+
+    function setConn(connected) {
+      dot.classList.toggle("on", !!connected);
+      connText.textContent = connected ? "connected to drone" : "waiting for drone…";
+    }
+
+    function logLine(name, data) {
+      const time = new Date().toLocaleTimeString();
+      log.textContent = `[${time}] ${name} ${JSON.stringify(data)}\n` + log.textContent;
+      const lines = log.textContent.split("\n");
+      if (lines.length > 200) log.textContent = lines.slice(0, 200).join("\n");
+    }
+
+    socket.on("connect", () => console.log("socket.io connected to bridge"));
+    socket.on("STATE", (s) => setConn(s.connected));
+    socket.on("CONN_STATE", (s) => setConn(s.connected));
+
+    socket.on("HEARTBEAT", (d) => {
+      msgCount++;
+      document.getElementById("hb-armed").textContent = (d.base_mode & 128) ? "ARMED" : "disarmed";
+      document.getElementById("hb-ap").textContent = d.autopilot;
+      document.getElementById("hb-mode").textContent = d.custom_mode;
+      logLine("HEARTBEAT", d);
+    });
+
+    socket.on("GLOBAL_POSITION_INT", (d) => {
+      document.getElementById("pos-lat").textContent = (d.lat / 1e7).toFixed(7);
+      document.getElementById("pos-lon").textContent = (d.lon / 1e7).toFixed(7);
+      document.getElementById("pos-alt").textContent = (d.relative_alt / 1000).toFixed(2);
+      document.getElementById("pos-hdg").textContent = (d.hdg / 100).toFixed(1);
+      logLine("GLOBAL_POSITION_INT", d);
+    });
+
+    socket.on("GPS_RAW_INT", (d) => {
+      const fixNames = ["NO_GPS","NO_FIX","2D_FIX","3D_FIX","DGPS","RTK_FLOAT","RTK_FIXED","STATIC","PPP"];
+      document.getElementById("gps-fix").textContent = fixNames[d.fix_type] || d.fix_type;
+      document.getElementById("gps-sats").textContent = d.satellites_visible;
+      document.getElementById("gps-eph").textContent = (d.eph / 100).toFixed(2);
+      logLine("GPS_RAW_INT", d);
+    });
+
+    socket.on("ATTITUDE", (d) => {
+      const toDeg = (r) => (r * 180 / Math.PI).toFixed(1);
+      document.getElementById("att-roll").textContent = toDeg(d.roll);
+      document.getElementById("att-pitch").textContent = toDeg(d.pitch);
+      document.getElementById("att-yaw").textContent = toDeg(d.yaw);
+      logLine("ATTITUDE", d);
+    });
+
+    socket.on("BATTERY_STATUS", (d) => {
+      document.getElementById("batt-pct").textContent = d.battery_remaining + "%";
+      const v = Array.isArray(d.voltages) ? d.voltages.filter(x => x < 65535).reduce((a,b)=>a+b,0) / 1000 : "—";
+      document.getElementById("batt-v").textContent = typeof v === "number" ? v.toFixed(2) : v;
+      document.getElementById("batt-a").textContent = (d.current_battery / 100).toFixed(2);
+      logLine("BATTERY_STATUS", d);
+    });
+
+    socket.on("SYS_STATUS", (d) => {
+      document.getElementById("sys-v").textContent = (d.voltage_battery / 1000).toFixed(2);
+      document.getElementById("sys-load").textContent = (d.load / 10).toFixed(1);
+      document.getElementById("sys-drop").textContent = d.drop_rate_comm;
+      logLine("SYS_STATUS", d);
+    });
+
+    socket.on("STATUSTEXT", (d) => logLine("STATUSTEXT", d));
+
+    // generic catch-all for everything else forwarded by the bridge
+    const known = ["connect","disconnect","STATE","CONN_STATE","HEARTBEAT","GLOBAL_POSITION_INT",
+      "GPS_RAW_INT","ATTITUDE","BATTERY_STATUS","SYS_STATUS","STATUSTEXT","MAVLINK_PKT"];
+    socket.onAny((name, data) => { if (!known.includes(name)) logLine(name, data); });
+
+    setInterval(() => {
+      document.getElementById("hb-rate").textContent = msgCount;
+      msgCount = 0;
+    }, 1000);
+  </script>
+</body>
+</html>

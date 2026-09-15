@@ -1,0 +1,14 @@
+# Full copy of the third-party iDronam app — not part of this repo,
+# kept locally only (source used for reverse-engineering capture-bridge).
+/Local/
+/Roaming/
+
+# Node dependencies — restore with `npm install` in capture-bridge/
+node_modules/
+
+# Vendored runtime binaries (Node.exe / ffmpeg.exe) — see capture-bridge/vendor/README.md
+capture-bridge/vendor/*.exe
+
+# Real device config (contains your drone's IP) — copy config.example.json to
+# config.json and fill in your own values.
+capture-bridge/config.json

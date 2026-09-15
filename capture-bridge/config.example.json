@@ -1,0 +1,8 @@
+{
+  "_comment": "device_ip is the ONLY thing you must set. It's the IP address of the drone / companion computer, the same value you'd type into iDronam's 'Add Device' screen. Find it by connecting your PC to the drone's Wi-Fi/network and checking iDronam's saved device, or your network adapter's gateway (ipconfig).",
+  "device_ip": "CHANGE_ME",
+  "device_port": 14550,
+  "http_port": 8080,
+  "camera_port": 10000,
+  "camera_path": "drone_cam"
+}
