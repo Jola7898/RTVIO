@@ -1,0 +1,871 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<style>body{margin:0}</style>
+<title>RTVIO Studio Internals</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,400..800&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:ital,wght@0,400..700;1,400&display=swap">
+<style>
+:root{
+  --ground:#f4f6f8; --surface:#ffffff; --sunk:#e8edf2; --ink:#17212b; --ink-2:#3a4856; --muted:#617184;
+  --rule:#d3dbe3; --accent:#0a78ad; --accent-soft:#dcf0fa; --ok:#1d8656; --warn:#9d5f08; --bad:#bf3030;
+  --ok-soft:#dff3e9; --warn-soft:#fbeed8; --bad-soft:#fbe3e3; --code-bg:#edf1f5;
+  --display:"Archivo","Arial Narrow",system-ui,sans-serif;
+  --body:"Source Sans 3","Segoe UI",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --ground:#0d1014; --surface:#151a21; --sunk:#1b222b; --ink:#d9e1ea; --ink-2:#b2bfcc; --muted:#8593a3;
+    --rule:#273039; --accent:#4cc2ff; --accent-soft:#12303f; --ok:#3ecf8e; --warn:#f5b041; --bad:#ff6b6b;
+    --ok-soft:#10301f; --warn-soft:#352812; --bad-soft:#3a1719; --code-bg:#10151b;
+  }
+}
+:root[data-theme="dark"]{
+  --ground:#0d1014; --surface:#151a21; --sunk:#1b222b; --ink:#d9e1ea; --ink-2:#b2bfcc; --muted:#8593a3;
+  --rule:#273039; --accent:#4cc2ff; --accent-soft:#12303f; --ok:#3ecf8e; --warn:#f5b041; --bad:#ff6b6b;
+  --ok-soft:#10301f; --warn-soft:#352812; --bad-soft:#3a1719; --code-bg:#10151b;
+}
+*{box-sizing:border-box}
+body{background:var(--ground);color:var(--ink);font:17px/1.62 var(--body);padding-inline:20px;padding-block:0 64px}
+a{color:var(--accent);text-underline-offset:2px}
+a:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+code,.mono{font-family:var(--mono);font-size:.84em}
+p code,li code,td code,dd code{background:var(--code-bg);padding:.08em .35em;border-radius:4px;white-space:nowrap}
+td code{white-space:normal;word-break:break-word}
+pre{background:var(--code-bg);border:1px solid var(--rule);border-radius:8px;padding:14px 16px;overflow-x:auto;font:13.5px/1.55 var(--mono);color:var(--ink-2);margin:0}
+
+.page{max-width:1180px;margin:0 auto;display:grid;grid-template-columns:210px minmax(0,1fr);gap:48px}
+.rail{position:sticky;top:env(safe-area-inset-top,0px);align-self:start;padding-top:40px;max-height:100vh;overflow-y:auto}
+.rail .brand{font:700 15px/1.2 var(--display);font-stretch:112%;letter-spacing:.02em;margin-bottom:14px}
+.rail .brand span{color:var(--accent)}
+.rail ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px;font-size:14.5px}
+.rail a{display:grid;grid-template-columns:30px 1fr;color:var(--ink-2);text-decoration:none;padding:3px 0}
+.rail a:hover{color:var(--accent)}
+.rail a b{font:500 12px/1.9 var(--mono);color:var(--muted)}
+main{min-width:0;padding-top:40px}
+.col{max-width:72ch}
+
+header.top{padding-bottom:28px;border-bottom:1px solid var(--rule);margin-bottom:8px}
+.eyebrow{font:600 12px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+h1{font:760 clamp(2.1rem,4.2vw,3rem)/1.05 var(--display);font-stretch:114%;letter-spacing:-.01em;margin:12px 0 14px;text-wrap:balance}
+h1 span{color:var(--accent)}
+.lede{font-size:1.14rem;color:var(--ink-2);max-width:66ch;margin:0}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:18px 28px;margin:26px 0 0;padding:0}
+.facts div{border-top:2px solid var(--ink);padding-top:8px}
+.facts dt{font:600 11.5px/1.3 var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+.facts dd{margin:4px 0 0;font:600 15.5px/1.35 var(--body);font-variant-numeric:tabular-nums}
+
+section{padding-top:44px}
+h2{font:680 1.6rem/1.2 var(--display);font-stretch:106%;margin:0 0 14px;text-wrap:balance;display:flex;gap:14px;align-items:baseline}
+h2 .n{font:500 14px/1 var(--mono);color:var(--accent);min-width:2.2em}
+h3{font:650 1.12rem/1.3 var(--display);font-stretch:104%;margin:30px 0 8px;text-wrap:balance}
+p{margin:0 0 14px}
+ul,ol.steps{margin:0 0 14px;padding-left:1.25em}
+li{margin:4px 0}
+.muted{color:var(--muted)}
+.small{font-size:14.5px}
+
+.tbl{overflow-x:auto;margin:14px 0 20px;border:1px solid var(--rule);border-radius:8px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:15px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--rule);vertical-align:top}
+th{font:600 11.5px/1.3 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);background:var(--sunk);white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.num{text-align:right;white-space:nowrap}
+th.num{text-align:right}
+
+figure{margin:22px 0 26px;padding:18px 18px 12px;background:var(--surface);border:1px solid var(--rule);border-radius:10px}
+figure .scroll{overflow-x:auto}
+figure svg{display:block;width:100%;height:auto;color:var(--ink-2);font-family:var(--body)}
+figure.wide svg{min-width:720px}
+figcaption{font-size:14.5px;color:var(--muted);margin-top:10px;max-width:80ch}
+.dg .box{fill:var(--surface);stroke:var(--ink-2);stroke-width:1.2}
+.dg .inner{fill:var(--sunk);stroke:var(--rule)}
+.dg .hot{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.4}
+.dg .zone{fill:none;stroke:var(--muted);stroke-dasharray:5 4}
+.dg .t{fill:var(--ink);font-size:13px;font-weight:600}
+.dg .s{fill:var(--muted);font-size:11.5px;font-family:var(--mono)}
+.dg .l{fill:var(--ink-2);font-size:11.5px}
+.dg .edge{stroke:currentColor;stroke-width:1.3;fill:none}
+.dg .edge.acc{stroke:var(--accent)}
+.dg .grid{stroke:var(--rule);stroke-width:1}
+.dg .bar{fill:var(--muted);opacity:.55}
+.dg .bar.cap{fill:var(--accent);opacity:1}
+.dg .bar.spill{fill:var(--warn);opacity:1}
+
+.bytes-wrap{overflow-x:auto;margin:8px 0 18px}
+.bytes{display:flex;min-width:620px;border:1px solid var(--ink-2);border-radius:6px;overflow:hidden;background:var(--surface)}
+.bytes span{flex:var(--w) 1 0;min-width:0;padding:6px 8px;border-right:1px solid var(--rule);display:flex;flex-direction:column;gap:1px}
+.bytes span:last-child{border-right:0}
+.bytes b{font:600 12.5px/1.3 var(--mono);color:var(--ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bytes i{font:400 11px/1.3 var(--mono);font-style:normal;color:var(--muted);white-space:nowrap}
+.bytes .hdr{background:var(--accent-soft)}
+.bytes .hdr b{color:var(--accent)}
+.bytes .var{background:repeating-linear-gradient(135deg,var(--surface) 0 8px,var(--sunk) 8px 16px)}
+.bytes-label{font:600 13px/1.3 var(--mono);color:var(--ink-2);margin-top:14px}
+
+.chip{display:inline-block;font:600 11px/1 var(--mono);letter-spacing:.05em;text-transform:uppercase;padding:4px 7px;border-radius:4px;white-space:nowrap}
+.chip.bad{color:var(--bad);background:var(--bad-soft)}
+.chip.warn{color:var(--warn);background:var(--warn-soft)}
+.chip.ok{color:var(--ok);background:var(--ok-soft)}
+.chip.info{color:var(--accent);background:var(--accent-soft)}
+
+.issues{display:flex;flex-direction:column;gap:0;margin:14px 0;border-top:1px solid var(--rule)}
+.issue{display:grid;grid-template-columns:92px minmax(0,1fr);gap:4px 16px;padding:14px 0;border-bottom:1px solid var(--rule)}
+.issue h4{margin:0;font:650 1rem/1.35 var(--body)}
+.issue p{margin:4px 0 0;font-size:15.5px;color:var(--ink-2)}
+.issue .where{font:12.5px/1.4 var(--mono);color:var(--muted);margin-top:4px}
+
+.tree{font:13.5px/1.6 var(--mono)}
+.tree .c{color:var(--muted)}
+.callout{border-left:3px solid var(--accent);background:var(--accent-soft);padding:10px 14px;border-radius:0 6px 6px 0;margin:14px 0;font-size:15.5px}
+ol.steps>li{margin:10px 0}
+ol.steps>li::marker{font:600 14px var(--mono);color:var(--accent)}
+.twocol{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:4px 28px}
+footer{margin-top:56px;padding-top:16px;border-top:1px solid var(--rule);font-size:14px;color:var(--muted)}
+
+@media (max-width:960px){
+  .page{grid-template-columns:1fr;gap:0}
+  .rail{position:static;max-height:none;padding-top:24px}
+  .rail ol{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr))}
+  main{padding-top:16px}
+}
+@media (max-width:520px){
+  body{font-size:16px}
+  .issue{grid-template-columns:1fr}
+}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+html{scroll-behavior:smooth}
+</style>
+</head>
+<body>
+
+
+<div class="page">
+<nav class="rail" aria-label="Contents">
+  <div class="brand">RTVIO <span>Studio</span></div>
+  <ol>
+    <li><a href="#topology"><b>§1</b>System topology</a></li>
+    <li><a href="#process"><b>§2</b>The Studio process</a></li>
+    <li><a href="#protocol"><b>§3</b>Phone link &amp; protocol</a></li>
+    <li><a href="#disk"><b>§4</b>Sessions on disk</a></li>
+    <li><a href="#queue"><b>§5</b>GPU job queue</a></li>
+    <li><a href="#api"><b>§6</b>HTTP API</a></li>
+    <li><a href="#ui"><b>§7</b>Browser front end</a></li>
+    <li><a href="#engine"><b>§8</b>Reconstruction engine</a></li>
+    <li><a href="#viz"><b>§9</b>Live viewer</a></li>
+    <li><a href="#android"><b>§10</b>Android capture app</a></li>
+    <li><a href="#others"><b>§11</b>Other entry points</a></li>
+    <li><a href="#stack"><b>§12</b>Everything used</a></li>
+    <li><a href="#measured"><b>§13</b>Measured here</a></li>
+    <li><a href="#tests"><b>§14</b>Tests</a></li>
+    <li><a href="#gaps"><b>§15</b>Gaps found</a></li>
+  </ol>
+</nav>
+
+<main>
+<header class="top">
+  <div class="eyebrow">Technical implementation · branch rtvio-python-pipeline · 15 Sep 2026</div>
+  <h1>RTVIO <span>Studio</span> Internals</h1>
+  <p class="lede">RTVIO Studio is a single desktop process that remote-controls an Android phone as a camera, records every frame of each take to disk, queues each take for VGGT reconstruction on the GPU, and shows the finished point cloud and Poisson mesh in the browser. This document explains how each part works, from the bytes on the wire to the meshing parameters, together with every library, model and tool the system depends on.</p>
+  <dl class="facts">
+    <div><dt>Ports</dt><dd>8080 web · 5555 phone · 8767 live viewer</dd></div>
+    <div><dt>Wire protocol</dt><dd>v2 (START/STOP + STATUS), v1-compatible</dd></div>
+    <div><dt>Model</dt><dd>VGGT-1B, bf16 aggregator, 64-frame windows</dd></div>
+    <div><dt>Measured on</dt><dd>RTX 5070 Ti 16 GB · 4.4–6.9 frames/s</dd></div>
+    <div><dt>Code</dt><dd>≈2.3k lines Studio · 3k engine · 5.5k Kotlin</dd></div>
+  </dl>
+</header>
+
+<!-- ================================================================ 1 -->
+<section id="topology">
+  <h2><span class="n">§1</span>System topology</h2>
+  <div class="col">
+    <p>Three programs are involved. The first is the <b>Android app</b> (<code>rtvioapk</code>), which only captures and transmits. The second is the <b>Studio process</b> (<code>python -m rtvio.studio</code>), which owns the phone socket, the session files, the job queue and the web server. The third is one <b>reconstruction subprocess</b> per job (<code>python -m rtvio.vggt_reconstruct</code>), which holds the GPU while it runs and exits when the job is done.</p>
+  </div>
+  <figure class="wide">
+    <div class="scroll">
+    <svg class="dg" viewBox="0 0 960 420" role="img" aria-label="The phone streams packets to PhoneLink inside the Studio process, which writes each frame to data/sessions; a finalized session is submitted to ReconQueue, which launches a vggt_reconstruct subprocess that writes outputs and progress; the browser polls the Studio HTTP server and watches the subprocess's live viewer over server-sent events.">
+      <defs><marker id="ah1" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L8,4 L0,8 z" fill="currentColor"/></marker></defs>
+      <!-- phone -->
+      <rect class="box" x="20" y="40" width="210" height="210" rx="10"/>
+      <text class="t" x="36" y="64">Android app</text>
+      <text class="s" x="36" y="80">rtvioapk 1.1-studio</text>
+      <rect class="inner" x="36" y="96" width="178" height="40" rx="6"/>
+      <text class="l" x="46" y="114">CameraX → JPEG encoder</text>
+      <text class="s" x="46" y="128">4 slots · 2 threads</text>
+      <rect class="inner" x="36" y="144" width="178" height="40" rx="6"/>
+      <text class="l" x="46" y="162">IMU 100 Hz · GPS 1 Hz</text>
+      <text class="s" x="46" y="176">gyro interpolated</text>
+      <rect class="inner" x="36" y="192" width="178" height="40" rx="6"/>
+      <text class="l" x="46" y="210">StreamClient + FrameSpool</text>
+      <text class="s" x="46" y="224">one socket, one writer</text>
+      <!-- studio zone -->
+      <rect class="zone" x="290" y="20" width="370" height="300" rx="12"/>
+      <text class="s" x="306" y="40">Studio process · python -m rtvio.studio</text>
+      <rect class="hot" x="310" y="56" width="150" height="54" rx="8"/>
+      <text class="t" x="324" y="78">PhoneLink</text>
+      <text class="s" x="324" y="96">TCP :5555</text>
+      <rect class="box" x="490" y="56" width="150" height="54" rx="8"/>
+      <text class="t" x="504" y="78">GpuMonitor</text>
+      <text class="s" x="504" y="96">nvidia-smi · 1 s</text>
+      <rect class="inner" x="310" y="150" width="150" height="54" rx="8"/>
+      <text class="t" x="324" y="172">data/sessions/</text>
+      <text class="s" x="324" y="190">&lt;id&gt;/frames/*.jpg</text>
+      <rect class="box" x="490" y="150" width="150" height="54" rx="8"/>
+      <text class="t" x="504" y="172">ReconQueue</text>
+      <text class="s" x="504" y="190">one job at a time</text>
+      <rect class="box" x="310" y="244" width="330" height="56" rx="8"/>
+      <text class="t" x="324" y="266">ThreadingHTTPServer :8080</text>
+      <text class="s" x="324" y="284">/api/* · /files/* · MJPEG viewfinder</text>
+      <!-- subprocess -->
+      <rect class="hot" x="710" y="110" width="230" height="130" rx="10"/>
+      <text class="t" x="726" y="134">vggt_reconstruct</text>
+      <text class="s" x="726" y="150">subprocess per job</text>
+      <text class="l" x="726" y="176">VGGT-1B on CUDA</text>
+      <text class="l" x="726" y="196">writes progress.json, job.log</text>
+      <text class="l" x="726" y="216">serves recon_viz SSE :8767</text>
+      <rect class="inner" x="710" y="270" width="190" height="50" rx="8"/>
+      <text class="t" x="724" y="291">recon-N/ outputs</text>
+      <text class="s" x="724" y="308">cloud_raw.ply · mesh_poisson.ply</text>
+      <!-- browser -->
+      <rect class="box" x="290" y="360" width="650" height="46" rx="8"/>
+      <text class="t" x="306" y="388">Browser · app.js + three.js r128 (vendored)</text>
+      <!-- edges -->
+      <line class="edge acc" x1="230" y1="72" x2="308" y2="72" marker-end="url(#ah1)"/>
+      <text class="l" x="236" y="66">stream</text>
+      <line class="edge" x1="308" y1="98" x2="232" y2="98" marker-end="url(#ah1)"/>
+      <text class="l" x="236" y="114">commands</text>
+      <line class="edge acc" x1="385" y1="110" x2="385" y2="148" marker-end="url(#ah1)"/>
+      <text class="l" x="392" y="134">inline write</text>
+      <line class="edge" x1="460" y1="177" x2="488" y2="177" marker-end="url(#ah1)"/>
+      <text class="l" x="475" y="143" text-anchor="middle">finalize</text>
+      <line class="edge acc" x1="640" y1="166" x2="708" y2="166" marker-end="url(#ah1)"/>
+      <text class="l" x="674" y="159" text-anchor="middle">Popen</text>
+      <line class="edge" x1="708" y1="192" x2="642" y2="192" stroke-dasharray="4 3" marker-end="url(#ah1)"/>
+      <text class="l" x="674" y="208" text-anchor="middle">progress</text>
+      <line class="edge" x1="810" y1="240" x2="810" y2="268" marker-end="url(#ah1)"/>
+      <line class="edge" x1="710" y1="300" x2="642" y2="286" marker-end="url(#ah1)"/>
+      <text class="l" x="676" y="318" text-anchor="middle">serves</text>
+      <line class="edge" x1="475" y1="358" x2="475" y2="302" marker-end="url(#ah1)"/>
+      <text class="l" x="482" y="336">polls /api/state · 1 s</text>
+      <line class="edge" x1="925" y1="242" x2="925" y2="358" marker-end="url(#ah1)" marker-start="url(#ah1)"/>
+      <text class="l" x="918" y="348" text-anchor="end">SSE · Watch live</text>
+    </svg>
+    </div>
+    <figcaption>Frames travel phone → PhoneLink → disk. The Studio process never imports torch: every GPU job is a separate Python process, so all of its VRAM is released when it exits and a crash only kills that job.</figcaption>
+  </figure>
+  <div class="tbl"><table>
+    <thead><tr><th>Port</th><th>Bound to</th><th>Owner</th><th>Carries</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">8080</td><td class="mono">127.0.0.1</td><td><code>server.py</code></td><td>Web UI, JSON API, MJPEG viewfinder, output files. The UI has no authentication, so it binds to localhost unless <code>--web-host</code> is set</td></tr>
+      <tr><td class="mono">5555</td><td class="mono">0.0.0.0</td><td><code>phone_link.py</code></td><td>RTVIO wire protocol (TCP). Must be reachable on the LAN</td></tr>
+      <tr><td class="mono">8767</td><td class="mono">0.0.0.0</td><td><code>recon_viz.py</code> in the job</td><td>The running job's live viewer (SSE). The port is fixed because only one job runs at a time</td></tr>
+      <tr><td class="mono">8766</td><td class="mono">0.0.0.0</td><td><code>recon_viz.py</code></td><td>The same viewer when you run <code>vggt_reconstruct --live-viz</code> or <code>vggt_live</code> by hand</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ================================================================ 2 -->
+<section id="process">
+  <h2><span class="n">§2</span>The Studio process</h2>
+  <div class="col">
+    <p><code>Studio.__init__</code> in <code>server.py</code> starts everything in this order: it creates <code>data/sessions/</code> and <code>data/video_jobs/</code>, deep-merges <code>studio_settings.json</code> over <code>DEFAULT_SETTINGS</code>, starts the GPU sampler, the job queue and the phone listener, and records the LAN IPv4 addresses. To find the default-route address, it <code>connect()</code>s a UDP socket to 10.255.255.255, which sends no packet. The startup log prints these addresses so the operator knows what to type into the phone.</p>
+    <p>Everything runs on standard-library threads, and nothing is asynchronous:</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Thread</th><th>Loop</th><th>Why it exists</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">HTTP workers</td><td><code>ThreadingHTTPServer</code>, daemon thread per request</td><td>A long-lived MJPEG response occupies one thread and nothing else</td></tr>
+      <tr><td class="mono">phone-accept</td><td><code>accept()</code> forever, backlog 2</td><td>The newest connection wins. A second connection is almost always the same phone reconnecting after WiFi drops, before the old socket has timed out</td></tr>
+      <tr><td class="mono">phone-reader</td><td>one per connection; dispatch on the header byte</td><td>Parses packets and writes each JPEG to disk <em>synchronously</em> (see §3.4)</td></tr>
+      <tr><td class="mono">phone-watchdog</td><td>0.5 s tick</td><td>Enforces the START-confirm, resume-grace and legacy-idle timers</td></tr>
+      <tr><td class="mono">gpu-monitor</td><td><code>nvidia-smi --query-gpu=…</code> every 1 s</td><td>Keeps 300 samples for the top-bar sparkline and per-job mean utilisation and peak memory</td></tr>
+      <tr><td class="mono">recon-worker</td><td>takes the next <code>queued</code> job, <code>Popen</code>, <code>wait()</code></td><td>Runs exactly one GPU job at a time</td></tr>
+    </tbody>
+  </table></div>
+  <div class="col">
+    <p class="small muted">Settings persist in <code>rtvio/data/studio_settings.json</code>. Each <code>POST /api/settings</code> sends a partial patch (for example <code>{"recon":{"overlap":12}}</code>). The server merges the patch recursively and writes the whole file back.</p>
+  </div>
+</section>
+
+<!-- ================================================================ 3 -->
+<section id="protocol">
+  <h2><span class="n">§3</span>Phone link &amp; wire protocol</h2>
+  <div class="col">
+    <p>One TCP stream carries everything, multiplexed by a leading header byte. All fields are big-endian. The canonical definition is <code>Protocol.kt</code>, with the Python twin in <code>stream/protocol.py</code>. Every read goes through <code>recv_exact()</code> because <code>recv(n)</code> can return fewer than <em>n</em> bytes: a 200 KB JPEG always arrives in pieces over WiFi. Two limits reject a desynchronised stream: <code>MAX_JPEG_BYTES</code> (32 MB) and <code>MAX_IMU_BATCH</code> (4096).</p>
+  </div>
+
+  <h3>3.1 Packet types</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Header</th><th>Name</th><th>Direction</th><th class="num">Size</th><th>Body</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">0xAA</td><td>HANDSHAKE_ACK</td><td>desktop → phone</td><td class="num">6 B</td><td><code>u32 version, u8 status</code>. Studio sends version 2; <code>live_pipeline</code>/<code>mock_receiver</code> send 1</td></tr>
+      <tr><td class="mono">0xFF</td><td>FRAME</td><td>phone → desktop</td><td class="num">21 + N</td><td>a recorded JPEG, stamped with wall-clock ms at sensor exposure</td></tr>
+      <tr><td class="mono">0xFA</td><td>PREVIEW</td><td>phone → desktop</td><td class="num">21 + N</td><td>same layout as FRAME; a viewfinder image sent 2×/s at quality 45 while armed and never recorded</td></tr>
+      <tr><td class="mono">0xFE</td><td>IMU batch</td><td>phone → desktop</td><td class="num">3 + 32n</td><td><code>i16 count</code>, then <code>{i64 t_ns, f32 a[3], f32 g[3]}</code>. Timestamps use the boot clock</td></tr>
+      <tr><td class="mono">0xFD</td><td>GPS</td><td>phone → desktop</td><td class="num">33 B</td><td><code>i64 t_ms, f64 lat, f64 lon, f32 alt, f32 acc</code> (−1 = unknown)</td></tr>
+      <tr><td class="mono">0xFC</td><td>INTRINSICS</td><td>phone → desktop</td><td class="num">59 + L</td><td><code>f32 fx fy cx cy, f64 k1 k2 p1 p2 k3, u16 L, source[L]</code></td></tr>
+      <tr><td class="mono">0xFB</td><td>STATUS</td><td>phone → desktop</td><td class="num">3 + L</td><td>JSON, sent about 1×/s (v2 only)</td></tr>
+      <tr><td class="mono">0xC0</td><td>COMMAND</td><td>desktop → phone</td><td class="num">3 + L</td><td>JSON <code>{"cmd":"start"|"stop"|"ping", …}</code> (v2 only)</td></tr>
+      <tr><td class="mono">0xE0 / E1 / E2</td><td>SESSION_BEGIN / FILE / END</td><td>phone → desktop</td><td class="num">—</td><td>bulk transfer of an offline recording on its own connection (§3.6)</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="bytes-label">FRAME · 0xFF</div>
+  <div class="bytes-wrap"><div class="bytes">
+    <span class="hdr" style="--w:1.4"><b>FF</b><i>u8</i></span>
+    <span style="--w:5"><b>timestamp_ms</b><i>i64 · wall clock</i></span>
+    <span style="--w:2.8"><b>width</b><i>i32</i></span>
+    <span style="--w:2.8"><b>height</b><i>i32</i></span>
+    <span style="--w:2.8"><b>size</b><i>i32 ≤ 32 MB</i></span>
+    <span class="var" style="--w:8"><b>jpeg[size] …</b><i>bytes as encoded on phone</i></span>
+  </div></div>
+  <div class="bytes-label">IMU sample · repeated count × inside 0xFE</div>
+  <div class="bytes-wrap"><div class="bytes">
+    <span style="--w:5"><b>t_ns</b><i>i64 · boot clock</i></span>
+    <span style="--w:6"><b>ax ay az</b><i>3 × f32 · m/s² incl. g</i></span>
+    <span style="--w:6"><b>gx gy gz</b><i>3 × f32 · rad/s</i></span>
+  </div></div>
+  <div class="bytes-label">STATUS · 0xFB  and  COMMAND · 0xC0</div>
+  <div class="bytes-wrap"><div class="bytes">
+    <span class="hdr" style="--w:1.4"><b>FB | C0</b><i>u8</i></span>
+    <span style="--w:2.8"><b>len</b><i>u16 ≤ 65535</i></span>
+    <span class="var" style="--w:12"><b>{"state":"recording","session":"20260915-161232","queued":0,…}</b><i>UTF-8 JSON object</i></span>
+  </div></div>
+
+  <h3>3.2 Version negotiation</h3>
+  <div class="col">
+    <p>The app reads the greeting with a 1.5 s timeout. Greeting ≥ 2 means <i>remote control</i>: the app connects <b>armed</b> (camera preview on, nothing recorded) and starts a reader coroutine for COMMAND packets. A v1 greeting, or no greeting at all, gives the original behaviour: stream from the moment of connect and never read another byte. Because of this, <code>live_pipeline.py</code>, <code>vggt_live.py</code> and <code>mock_receiver.py</code> work with the new app unchanged.</p>
+  </div>
+  <figure class="wide">
+    <div class="scroll">
+    <svg class="dg" viewBox="0 0 920 190" role="img" aria-label="Phone link states: OFF to CONNECTING on connect; CONNECTING to ARMED on a version 2 handshake or to STREAMING on version 1; ARMED to RECORDING on START; RECORDING to FINISHING on STOP; FINISHING back to ARMED once the spool is drained and STATUS reports last_completed.">
+      <defs><marker id="ah2" viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="currentColor"/></marker></defs>
+      <rect class="box" x="20" y="50" width="90" height="40" rx="20"/><text class="t" x="65" y="75" text-anchor="middle">OFF</text>
+      <rect class="box" x="170" y="50" width="120" height="40" rx="20"/><text class="t" x="230" y="75" text-anchor="middle">CONNECTING</text>
+      <rect class="hot" x="400" y="50" width="100" height="40" rx="20"/><text class="t" x="450" y="75" text-anchor="middle">ARMED</text>
+      <rect class="hot" x="610" y="50" width="110" height="40" rx="20"/><text class="t" x="665" y="75" text-anchor="middle">RECORDING</text>
+      <rect class="box" x="790" y="50" width="110" height="40" rx="20"/><text class="t" x="845" y="75" text-anchor="middle">FINISHING</text>
+      <rect class="inner" x="170" y="130" width="120" height="40" rx="20"/><text class="t" x="230" y="155" text-anchor="middle">STREAMING</text>
+      <line class="edge" x1="110" y1="70" x2="168" y2="70" marker-end="url(#ah2)"/><text class="l" x="139" y="40" text-anchor="middle">CONNECT</text>
+      <line class="edge acc" x1="290" y1="70" x2="398" y2="70" marker-end="url(#ah2)"/><text class="l" x="345" y="40" text-anchor="middle">greeting v2</text>
+      <line class="edge acc" x1="500" y1="70" x2="608" y2="70" marker-end="url(#ah2)"/><text class="l" x="555" y="40" text-anchor="middle">START · 0xC0 / REC</text>
+      <line class="edge" x1="720" y1="70" x2="788" y2="70" marker-end="url(#ah2)"/><text class="l" x="755" y="40" text-anchor="middle">STOP</text>
+      <path class="edge" d="M845,90 V150 H450 V92" marker-end="url(#ah2)"/>
+      <text class="l" x="648" y="170" text-anchor="middle">spool drained → STATUS last_completed=&lt;id&gt; → desktop finalizes</text>
+      <line class="edge" x1="230" y1="90" x2="230" y2="128" marker-end="url(#ah2)"/><text class="l" x="238" y="114">greeting v1 / none</text>
+    </svg>
+    </div>
+    <figcaption><code>LinkState</code> in <code>StreamingSession.kt</code>. A take ends when the desktop sees <code>armed</code> with <code>last_completed</code> naming it. It does <em>not</em> end on STOP, because a slow link can still have minutes of spooled frames to upload after STOP.</figcaption>
+  </figure>
+
+  <h3>3.3 How a take moves</h3>
+  <ol class="steps">
+    <li><b>Start.</b> <code>POST /api/record/start</code> → <code>PhoneLink.start_recording()</code>. The desktop refuses unless the phone is connected, is v2, reports <code>armed</code> and no take is open. It then opens a <code>SessionWriter</code> (<code>origin="studio"</code>, unconfirmed) and sends <code>{"cmd":"start","session":id, resolution, fps, jpeg_quality, gps, imu}</code>.</li>
+    <li><b>Confirm.</b> The phone saves the capture settings into its own preferences, opens a <code>FrameSpool</code>, rebinds the camera if the resolution changed, and reports <code>recording</code>. If no confirmation arrives within 8 s, the take is discarded and its empty directory removed.</li>
+    <li><b>Record.</b> Every FRAME goes into the phone's spool, then onto the socket, then into <code>frames/NNNNNN.jpg</code>. IMU and GPS rows accumulate in memory. The phone's own REC button works too: a STATUS for an unknown session id opens a take with <code>origin="phone"</code>.</li>
+    <li><b>Stop.</b> <code>stop_recording()</code> sends STOP. If the socket is down, STOP is re-sent every 2 s while the phone still reports <code>recording</code>. The phone closes the camera gate and switches to <code>finishing</code>.</li>
+    <li><b>Finalize.</b> Once the spool and encoder are empty, the phone reports <code>armed</code> with <code>last_completed</code> and <code>last_frames_sent</code>. <code>SessionWriter.finalize()</code> writes the JSON sidecars and compares the frame count the phone says it sent with the count received. If <code>auto_reconstruct</code> is on, the session is submitted to the queue.</li>
+  </ol>
+
+  <h3>3.4 Why frames are written inline</h3>
+  <div class="col">
+    <p>A ~100 KB write to a local SSD takes well under a millisecond. Writing on the socket thread means no in-process queue can overflow and silently drop frames. If the disk is slow, TCP backpressure slows the phone, and the phone spools to flash instead of dropping. <code>stream/recorder.py</code> deliberately makes the opposite trade (a bounded queue that drops), because it serves a live pipeline that must never stall.</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>Constant</th><th class="num">Value</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td><code>START_CONFIRM_TIMEOUT_S</code></td><td class="num">8 s</td><td>An unconfirmed START is discarded</td></tr>
+      <tr><td><code>RESUME_GRACE_S</code></td><td class="num">120 s</td><td>A phone that drops mid-take may reconnect and keep uploading into the same take</td></tr>
+      <tr><td><code>SOCKET_IDLE_TIMEOUT_S</code></td><td class="num">15 s</td><td>A v2 phone sends STATUS every second, so 15 s of silence means the link is dead</td></tr>
+      <tr><td><code>STOP_RESEND_S</code></td><td class="num">2 s</td><td>Retry interval for a STOP that was lost with a dying socket</td></tr>
+      <tr><td><code>LEGACY_IDLE_FINALIZE_S</code></td><td class="num">3 s</td><td>A v1 app's automatic take ends this long after frames stop</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>3.5 Clock pinning</h3>
+  <div class="col">
+    <p>Frames and GPS use the wall clock (epoch ms). IMU samples use <code>SensorEvent.timestamp</code>: nanoseconds since boot, on a monotonic clock that doesn't jump when NTP corrects the time. Every STATUS carries <code>wall_ms</code> and <code>elapsed_ns</code> read back to back on the phone, so <code>SessionWriter</code> computes <code>boot_to_wall = wall_ms/1e3 − elapsed_ns/1e9</code> for each STATUS. At finalize it takes the median to convert IMU rows onto the frames' timeline. This is more precise than the receive-time minimum filter <code>stream/clock.py</code> falls back on, because transport delay never enters the calculation.</p>
+  </div>
+
+  <h3>3.6 Offline sessions and transfer</h3>
+  <div class="col">
+    <p>RECORD LOCALLY writes the same layout to <code>Android/data/com.rtvio.mapper/files/recordings/&lt;id&gt;/</code> with no socket involved. Later, <i>Saved sessions → Transfer</i> opens a dedicated connection, ignores the greeting, and sends <code>SESSION_BEGIN(id, file_count, total_bytes)</code>, then one <code>SESSION_FILE(rel_path, size)</code> header plus raw bytes per file in 64 KB chunks, then <code>SESSION_END</code>. <code>_receive_session_transfer</code> streams each file to disk in chunks of up to 1 MB. <code>_normalize_transferred_meta</code> then rewrites the app's <code>session_meta.json</code> into the Studio format, so the session list does not break on the app's different field names.</p>
+  </div>
+</section>
+
+<!-- ================================================================ 4 -->
+<section id="disk">
+  <h2><span class="n">§4</span>Sessions on disk</h2>
+  <div class="col">
+    <p>A session directory is both Studio's record of the take and the direct input to <code>vggt_reconstruct --from-recording</code>; no conversion step sits between them. Every path that captures takes produces this layout: Studio live takes, transferred offline takes, <code>vggt_live</code> output and <code>live_pipeline --record-only</code>.</p>
+  </div>
+<pre class="tree">rtvio/data/
+├── studio_settings.json
+├── models/                         <span class="c">vggt1b_model.pt (~5 GB), yolov8n-seg.pt</span>
+├── sessions/&lt;yyyyMMdd-HHmmss&gt;/
+│   ├── frames/000000.jpg …         <span class="c">bytes exactly as the phone encoded them</span>
+│   ├── frame_timestamps.json       <span class="c">seconds from first frame; null = dropped on phone</span>
+│   ├── gps_data.json               <span class="c">[{timestamp, latitude_deg, longitude_deg, altitude_m, accuracy_m}]</span>
+│   ├── imu_data.json               <span class="c">[{timestamp, accel_body_xyz, gyro_body_xyz}]</span>
+│   ├── camera_intrinsics.json      <span class="c">latest 0xFC packet</span>
+│   ├── flight_config.json          <span class="c">measured median fps, n_frames, total_time_s</span>
+│   ├── session_meta.json           <span class="c">origin, reason, complete, gaps, phone model, capture params</span>
+│   └── recon-1/ recon-2/ …         <span class="c">one directory per reconstruction attempt</span>
+│       ├── cloud_raw.ply  mesh_poisson.ply  cameras.json
+│       ├── CHECKPOINT_REPORT.md/.json  trajectory_check.png
+│       └── progress.json  job.log
+└── video_jobs/&lt;clip-name&gt;-&lt;n&gt;/     <span class="c">same outputs + extracted frames/ for a video-file job</span></pre>
+</section>
+
+<!-- ================================================================ 5 -->
+<section id="queue">
+  <h2><span class="n">§5</span>GPU job queue</h2>
+  <div class="col">
+    <p><code>jobs.ReconQueue</code> is a list of <code>ReconJob</code> objects protected by a lock, plus one worker thread. A job is either <code>"recording"</code> (source = a session directory, output = the next free <code>recon-N/</code> inside it) or <code>"video"</code> (source = any local file path, output = <code>video_jobs/&lt;name&gt;-&lt;n&gt;/</code>). There are three reasons each job runs as its own subprocess:</p>
+    <ul>
+      <li>VGGT already sizes its windows to fill free VRAM, so two concurrent jobs would only compete for memory.</li>
+      <li>When the process exits, every byte of VRAM it held is released, so no fragmentation or cached allocations carry over to the next job.</li>
+      <li>An OOM, a crash or a Cancel (<code>proc.terminate()</code>) kills that job and nothing else.</li>
+    </ul>
+    <p><code>build_command()</code> maps the web settings onto the CLI:</p>
+  </div>
+  <div class="tbl"><table>
+    <thead><tr><th>UI setting</th><th>Default</th><th>CLI flag</th><th>What it controls</th></tr></thead>
+    <tbody>
+      <tr><td>Frames per VGGT window</td><td class="mono">auto</td><td><code>--window-frames</code></td><td>Frames solved jointly per forward pass; <code>auto</code> fills free VRAM, capped at 64</td></tr>
+      <tr><td>Window overlap</td><td class="mono">8</td><td><code>--overlap</code></td><td>Frames shared between neighbouring windows; these supply the Sim(3) correspondences</td></tr>
+      <tr><td>Frame stride</td><td class="mono">1</td><td><code>--frame-stride</code></td><td>Use every N-th frame</td></tr>
+      <tr><td>Confidence percentile</td><td class="mono">50</td><td><code>--conf-percentile</code></td><td>Per-window gate over above-floor confidence</td></tr>
+      <tr><td>Voxel factor</td><td class="mono">1.0</td><td><code>--voxel-factor</code></td><td>Fusion voxel = factor × one pixel's footprint at median depth</td></tr>
+      <tr><td>Min views per point</td><td class="mono">2</td><td><code>--min-views</code></td><td>Voxels seen by fewer distinct frames are dropped</td></tr>
+      <tr><td>Poisson depth</td><td class="mono">10</td><td><code>--poisson-depth</code></td><td>Octree depth for Screened Poisson</td></tr>
+      <tr><td>GPS</td><td class="mono">off</td><td><code>--gps-mode</code></td><td><code>off</code> or <code>global</code> (one Sim(3) of the whole trajectory to GPS); see §15</td></tr>
+      <tr><td>Mask people / moving objects</td><td class="mono">false</td><td><code>--no-masking</code> / <code>--masking</code></td><td>YOLOv8-seg masks dynamic pixels before VGGT</td></tr>
+      <tr><td>Also write LAS, OBJ/GLB, COLMAP</td><td class="mono">false</td><td><code>--extras</code></td><td>Extra exports (§8.10)</td></tr>
+    </tbody>
+  </table></div>
+  <div class="col">
+    <p>Studio always adds <code>-u</code>, <code>--out</code>, <code>--progress &lt;out&gt;/progress.json</code> and <code>--live-viz --viz-port 8767 --no-viz-hold</code>. The last flag makes the job exit when it finishes instead of keeping its viewer open, so the next queued job can start. The environment sets <code>PYTHONUNBUFFERED=1</code> and <code>PYTHONIOENCODING=utf-8</code>, and stdout and stderr go to <code>job.log</code>. On Windows, <code>CREATE_NO_WINDOW</code> stops a console window from appearing.</p>
+    <p><b>Progress channel.</b> The job rewrites <code>progress.json</code> atomically (a <code>.tmp</code> file, then <code>os.replace</code>). On Windows, <code>os.replace</code> fails with <code>PermissionError</code> while a reader has the file open, so it retries 20× at 50 ms. Fields: <code>stage</code> (<code>loading → frames → vggt → fusing → meshing → extras → done|error</code>), <code>fraction</code> (0–0.85 across VGGT windows, then 0.86 / 0.90 / 0.97 / 1.0), <code>window/windows</code>, <code>frames_done</code>, <code>eta_s</code>, <code>vggt_fps</code>, <code>points</code>, <code>faces</code>, <code>error</code>. On an exception, the last reported stage is kept so the UI can say where the job failed.</p>
+    <p><b>State.</b> The job list is in memory and is empty again after a Studio restart. The UI still works after a restart because <code>list_sessions()</code> and <code>list_video_jobs()</code> rebuild everything from disk and overlay live job state only where a job is still tracked. Delete refuses queued or running jobs, and deleting a recon removes only its <code>recon-N/</code>, never the captured frames.</p>
+  </div>
+</section>
+
+<!-- ================================================================ 6 -->
+<section id="api">
+  <h2><span class="n">§6</span>HTTP API</h2>
+  <div class="col"><p>All handlers live in one <code>BaseHTTPRequestHandler</code> using HTTP/1.1 with <code>Cache-Control: no-store</code>, and routing is done with regexes. File routes resolve through <code>realpath</code> and must stay inside their session or job directory. Session names must match <code>^[\w.-]+$</code>.</p></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Method</th><th>Path</th><th>Returns / does</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">GET</td><td><code>/</code>, <code>/static/*</code></td><td>The page and vendored assets</td></tr>
+      <tr><td class="mono">GET</td><td><code>/api/state</code></td><td>Phone snapshot, last 30 jobs, 90 GPU samples, settings, LAN IPs</td></tr>
+      <tr><td class="mono">GET</td><td><code>/api/sessions</code></td><td>50 newest sessions with meta, thumbnail, <code>recon-N</code> file sizes and progress</td></tr>
+      <tr><td class="mono">GET</td><td><code>/api/video-jobs</code></td><td>Video-file jobs, read from disk and overlaid with live state</td></tr>
+      <tr><td class="mono">GET</td><td><code>/api/preview.jpg</code> · <code>/api/preview.mjpg</code></td><td>Latest viewfinder frame · <code>multipart/x-mixed-replace</code> stream capped at 12 fps</td></tr>
+      <tr><td class="mono">GET</td><td><code>/api/jobs/{id}/log</code></td><td>Last 200 lines of <code>job.log</code></td></tr>
+      <tr><td class="mono">GET</td><td><code>/files/{session}/{path}</code> · <code>/video_files/{dir}/{path}</code></td><td>Streams output files in 1 MB chunks (PLY, report, thumbnails)</td></tr>
+      <tr><td class="mono">POST</td><td><code>/api/record/start</code> · <code>/stop</code></td><td>Starts or stops a remote take; 409 with a reason when refused</td></tr>
+      <tr><td class="mono">POST</td><td><code>/api/phone/ping</code></td><td>Asks the phone for an immediate STATUS</td></tr>
+      <tr><td class="mono">POST</td><td><code>/api/settings</code></td><td>Deep-merges the patch and persists it</td></tr>
+      <tr><td class="mono">POST</td><td><code>/api/sessions/{id}/reconstruct</code></td><td>Queues a job; 409 while the session is still recording (no <code>frame_timestamps.json</code> yet)</td></tr>
+      <tr><td class="mono">POST</td><td><code>/api/reconstruct-video</code></td><td><code>{"path": …}</code>. No upload: the file must exist on this machine. Quotes from Explorer's "Copy as path" are stripped</td></tr>
+      <tr><td class="mono">POST</td><td><code>/api/jobs/{id}/cancel</code> · <code>/delete</code></td><td>Cancel: queued → cancelled, running → <code>terminate()</code>. Delete: removes a finished job's <code>out_dir</code></td></tr>
+      <tr><td class="mono">POST</td><td><code>/api/sessions/{id}/recons/recon-N/delete</code> · <code>/api/video-jobs/{dir}/delete</code></td><td>Deletes outputs straight from disk, so it works after a restart</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ================================================================ 7 -->
+<section id="ui">
+  <h2><span class="n">§7</span>Browser front end</h2>
+  <div class="col">
+    <p>Three files with no build step: <code>index.html</code> (171 lines), <code>app.js</code> (487), <code>style.css</code> (122). The page polls <code>/api/state</code> every 1 s and <code>/api/sessions</code> and <code>/api/video-jobs</code> every 2.5 s, then re-renders with template strings. Every value interpolated into HTML goes through <code>esc()</code>.</p>
+    <ul>
+      <li><b>Viewfinder.</b> An <code>&lt;img src="/api/preview.mjpg"&gt;</code>: the browser renders the multipart stream as video, with no script involved. The server waits on a <code>Condition</code> signalled by each new preview or frame, so it doesn't poll.</li>
+      <li><b>Settings.</b> Every <code>[data-setting="recon.overlap"]</code> control posts a one-key patch when it changes. Re-rendering pauses for 3 s after a local edit so the 1 s poll doesn't overwrite what the user is typing.</li>
+      <li><b>Session cards.</b> Each card is rendered inside its own <code>try/catch</code>. Before this, one transferred session with an unexpected meta shape threw inside <code>.map()</code> and blanked the whole list.</li>
+      <li><b>GPU sparkline.</b> A 160×28 canvas plotting 90 one-second <code>nvidia-smi</code> samples as a line with an area fill.</li>
+      <li><b>3D viewer.</b> three.js r128 with <code>OrbitControls</code> and <code>PLYLoader</code>, vendored under <code>web/vendor/</code> so the page works offline. It loads the binary PLYs directly and switches between point cloud (size 1–8 px, no attenuation) and mesh (unlit vertex colours, or shaded <code>MeshStandardMaterial</code>, with optional wireframe). It overlays the camera path from <code>cameras.json</code> and fits near/far planes to the bounding sphere (radius/2000 … radius×200).</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ================================================================ 8 -->
+<section id="engine">
+  <h2><span class="n">§8</span>Reconstruction engine</h2>
+  <div class="col">
+    <p><code>vggt_reconstruct.py</code> (1,135 lines) turns a frame sequence into <code>cloud_raw.ply</code> and <code>mesh_poisson.ply</code> using vision only: no GPS unless asked for, and no IMU. The per-window body and the finalization tail are the shared functions <code>_process_window</code> and <code>_finalize_and_write</code>, so batch (<code>--video</code>, <code>--from-recording</code>) and live (<code>vggt_live</code>) runs of the same footage produce the same geometry.</p>
+  </div>
+
+  <figure class="wide">
+    <div class="scroll">
+    <svg class="dg" viewBox="0 0 900 200" role="img" aria-label="Three 64-frame windows overlapping by 8 frames: window 0 covers frames 0 to 64, window 1 covers 56 to 120, window 2 covers 112 to 176. The shaded 8-frame overlaps are where each window is aligned to the previous one.">
+      <line class="grid" x1="40" y1="150" x2="860" y2="150"/>
+      <rect class="box" x="40" y="30" width="256" height="28" rx="4"/><text class="t" x="52" y="49">W0 · frames 0–63</text>
+      <rect class="box" x="264" y="70" width="256" height="28" rx="4"/><text class="t" x="304" y="89">W1 · frames 56–119</text>
+      <rect class="box" x="488" y="110" width="256" height="28" rx="4"/><text class="t" x="528" y="129">W2 · frames 112–175</text>
+      <rect class="hot" x="264" y="30" width="32" height="68"/>
+      <rect class="hot" x="488" y="70" width="32" height="68"/>
+      <line class="edge" x1="40" y1="150" x2="40" y2="156"/><text class="s" x="40" y="170" text-anchor="middle">0</text>
+      <line class="edge" x1="264" y1="150" x2="264" y2="156"/><text class="s" x="264" y="170" text-anchor="middle">56</text>
+      <line class="edge" x1="296" y1="150" x2="296" y2="156"/><text class="s" x="298" y="170" text-anchor="start">64</text>
+      <line class="edge" x1="488" y1="150" x2="488" y2="156"/><text class="s" x="488" y="170" text-anchor="middle">112</text>
+      <line class="edge" x1="520" y1="150" x2="520" y2="156"/><text class="s" x="522" y="170" text-anchor="start">120</text>
+      <line class="edge" x1="744" y1="150" x2="744" y2="156"/><text class="s" x="744" y="170" text-anchor="middle">176</text>
+      <text class="l" x="280" y="190" text-anchor="middle">seam 1: Sim(3) W1→W0</text>
+      <text class="l" x="504" y="190" text-anchor="middle">seam 2: Sim(3) W2→W1</text>
+      <text class="s" x="860" y="170" text-anchor="end">frame index</text>
+      <text class="l" x="770" y="49">own origin,</text>
+      <text class="l" x="770" y="65">own scale</text>
+      <text class="l" x="770" y="81">per window</text>
+    </svg>
+    </div>
+    <figcaption>Each window is solved in its own coordinate frame and scale. The shaded frames appear in both neighbouring windows, and VGGT predicts a depth for every pixel of those frames in both. Each pixel pair is an exact 3D correspondence with no feature matching, and a robust Sim(3) fitted to them maps each new window onto the previous one. This is the VGGT-Long recipe without its loop closure.</figcaption>
+  </figure>
+
+  <ol class="steps">
+    <li id="e-model"><b>Load the model.</b> <code>VGGT(enable_point=False, enable_track=False)</code> drops about 98 M parameters of unused heads. Weights come from <code>data/models/vggt1b_model.pt</code> (or <code>$RTVIO_VGGT_CHECKPOINT</code>) via <code>torch.load(mmap=True, weights_only=True)</code>, so the 5 GB file is never copied into RAM, with <code>from_pretrained("facebook/VGGT-1B")</code> as the network fallback. The aggregator (~909 M params, nearly all the compute) is cast to <b>bf16</b> on compute capability ≥ 8 and fp16 below that. On fp16 cards the heads stay in fp32, because <code>depth_head</code>'s <code>exp()</code> confidence overflows 65504 and returns NaN (found on a 4 GB GTX 1650). TF32 is on. <code>cudnn.benchmark</code> is off because it re-tunes for every new tensor shape, which caused 7–11 s stalls on the last window and on DPT remainder chunks.</li>
+    <li><b>Prepare frames.</b> <code>FrameLoader</code> decodes on an 8-thread pool and prefetches the next window while the GPU runs the current one. Portrait frames are rotated 90° clockwise to landscape: a 9:16 frame at VGGT's 518 px width would otherwise lose 44% of its height to cropping or spend 43% of its tokens on padding. Frames are resized with <code>INTER_AREA</code> to 518 px wide, the height is rounded to a multiple of 14 (the ViT patch size) and centre-cropped to ≤ 518 px, which gives 518×294 for 16:9 and 518×392 for 4:3. Each frame's blur score (Laplacian variance) is recorded. With masking on, YOLO sets dynamic pixels to 0 under a lock, because ultralytics predictors are not thread-safe.</li>
+    <li><b>Size the windows.</b> <code>auto_window_frames</code> fits a linear VRAM model measured on this card: <code>n = (free_MB − 1230·16·Mpix − 1500) / (39·tokens/1000)</code>, clamped to 12…64. On <code>OutOfMemoryError</code> the window shrinks by ×0.75 and the same <code>start</code> is retried; this is safe because state is only mutated after the forward pass succeeds. <code>_plan_next</code> merges a leftover tail shorter than half a window into the last window.</li>
+    <li><b>Forward pass.</b> The aggregator runs under autocast, then <code>camera_head</code> → <code>pose_encoding_to_extri_intri</code> (cam-from-world 3×4 extrinsics plus K), and <code>depth_head</code> (DPT, run in 16-frame chunks) → per-pixel depth and confidence.</li>
+    <li><b>Per-pixel geometry and gates (GPU).</b> Pixels are unprojected to world points <code>P (S,H,W,3)</code>. A pixel is kept only if it passes all of these gates:
+      <ul>
+        <li><em>Confidence gate:</em> the 50th percentile of pixels <em>above the window's floor value</em>. On one overcast aerial clip, 84% of pixels sat exactly at the floor, so a raw percentile kept everything and let a cone of sky depth into the cloud.</li>
+        <li><em>Continuity mask:</em> relative depth jump &gt; 4% per pixel, dilated 3×3. This removes the "flying pixels" between foreground and background.</li>
+        <li><em>Validity:</em> depth &gt; 0 and all coordinates finite.</li>
+      </ul>
+      Normals come from central differences and are oriented toward the observing camera, because Poisson needs oriented normals.</li>
+    <li><b>Seam alignment.</b> For the shared frames, pixels valid in both windows become correspondences. With ≥ 2,000 correspondences, <code>fusion.robust_sim3</code> runs. First it scores 512 minimal 3-point Umeyama hypotheses (solved as one batched SVD) on 20 k points with a 5% relative inlier threshold. Then 10 iterations of Cauchy-weighted IRLS Umeyama refine the best one: <code>w = 1/(1+(r/2σ)²)</code>, σ = 1.4826·median, residuals divided by depth so near and far points count equally, at most 250 k points. RANSAC comes first because plain IRLS settled on 0.41 instead of 0.70 when 25% of outliers were biased one way. Below 2,000 correspondences (a whip pan, a blank wall), the fallback chains through one shared camera and takes scale from the median depth ratio, and the report shows a warning.</li>
+    <li><b>Voxel fusion.</b> Voxel size = <code>voxel_factor × median_depth / fx</code>, about one pixel's footprint. Only frames not already fused are added. Voxel keys pack three 21-bit indices into one int64; <code>torch.unique</code> + <code>index_add_</code> reduce on the GPU, and a background numpy thread merges the partial results every 6 windows so the GPU never waits on the merge. Each voxel stores summed position, colour and normal, its point count, and a <em>distinct-frame</em> count; a point seen by only one frame is usually a depth-edge artifact.</li>
+    <li><b>Finalize the cloud.</b> Voxels with fewer than <code>min_views</code> frames are dropped, then a statistical outlier filter runs (k = 12, mean + 2σ, the Open3D criterion, on <code>cKDTree</code> with all cores). The output frame is either relative (first camera at the origin, rotation undone via <code>R_UNROTATE</code>, OpenCV → Y-up via <code>diag(1,−1,−1)</code>) or ENU metres if georeferenced. <code>cloud_raw.ply</code> is binary little-endian with xyz, normals, RGB and a <code>views</code> scalar; <code>cameras.json</code> holds per-frame R, centre and K in the same frame.</li>
+    <li><b>Mesh.</b> pymeshlab Screened Poisson with depth 10, <code>samplespernode=1.5</code>, <code>pointweight=4</code>, all threads. Poisson closes surfaces over regions with no data, so faces with any vertex farther than <code>max(3·voxel, 2·octree cell)</code> from an input point are trimmed. Connected components smaller than <code>max(200, 0.2%)</code> of faces are then dropped. Vertex colours come from the nearest cloud point. Output: <code>mesh_poisson.ply</code>. If meshing fails, a warning is logged and the cloud is still complete.</li>
+    <li id="e-extras"><b>Georeference, extras, report.</b> With <code>--gps-mode global</code>, each camera is paired with its nearest fix within 1 s. With ≥ 3 anchors spanning ≥ 5 m, one global <code>robust_sim3</code> maps the trajectory to ENU, and the median and 90th-percentile residuals are logged. <code>--extras</code> writes LAS 1.2 (point format 3, UTM via a closed-form Snyder projection, WKT <code>.prj</code> sidecar), OBJ and GLB through trimesh, a COLMAP text model with the exact 518-px frames for gsplat, and when georeferenced a 2.5D DSM PNG with <code>.pgw</code> world file. Every run writes <code>CHECKPOINT_REPORT.md</code> and <code>.json</code> (throughput, peak VRAM, seams, blur, georeferencing) and <code>trajectory_check.png</code>.</li>
+  </ol>
+
+  <figure>
+    <svg class="dg" viewBox="0 0 640 262" role="img" aria-label="Milliseconds per frame by VGGT window size on the RTX 5070 Ti: 99 at 16 frames rising to 346 at 112 frames, then 899 at 128 frames when memory spills. 64 frames, the automatic cap, costs 207 ms per frame.">
+      <line class="grid" x1="60" y1="210" x2="620" y2="210"/>
+      <line class="grid" x1="60" y1="146.7" x2="620" y2="146.7"/>
+      <line class="grid" x1="60" y1="83.3" x2="620" y2="83.3"/>
+      <line class="grid" x1="60" y1="20" x2="620" y2="20"/>
+      <text class="s" x="52" y="214" text-anchor="end">0</text>
+      <text class="s" x="52" y="150.7" text-anchor="end">300</text>
+      <text class="s" x="52" y="87.3" text-anchor="end">600</text>
+      <text class="s" x="52" y="24" text-anchor="end">900</text>
+      <rect class="bar" x="75" y="189.1" width="40" height="20.9"/>
+      <rect class="bar" x="145" y="182.8" width="40" height="27.2"/>
+      <rect class="bar" x="215" y="174.1" width="40" height="35.9"/>
+      <rect class="bar cap" x="285" y="166.3" width="40" height="43.7"/>
+      <rect class="bar" x="355" y="158.1" width="40" height="51.9"/>
+      <rect class="bar" x="425" y="140.5" width="40" height="69.5"/>
+      <rect class="bar" x="495" y="137" width="40" height="73"/>
+      <rect class="bar spill" x="565" y="20.2" width="40" height="189.8"/>
+      <text class="l" x="95" y="183" text-anchor="middle">99</text>
+      <text class="l" x="165" y="177" text-anchor="middle">129</text>
+      <text class="l" x="235" y="168" text-anchor="middle">170</text>
+      <text class="t" x="305" y="160" text-anchor="middle">207</text>
+      <text class="l" x="375" y="152" text-anchor="middle">246</text>
+      <text class="l" x="445" y="134" text-anchor="middle">329</text>
+      <text class="l" x="515" y="131" text-anchor="middle">346</text>
+      <text class="t" x="555" y="42" text-anchor="end">899 · WDDM spills to shared memory</text>
+      <text class="t" x="305" y="110" text-anchor="middle">cap = 64</text>
+      <line class="edge acc" x1="305" y1="116" x2="305" y2="146"/>
+      <text class="s" x="95" y="228" text-anchor="middle">16</text>
+      <text class="s" x="165" y="228" text-anchor="middle">32</text>
+      <text class="s" x="235" y="228" text-anchor="middle">48</text>
+      <text class="s" x="305" y="228" text-anchor="middle">64</text>
+      <text class="s" x="375" y="228" text-anchor="middle">80</text>
+      <text class="s" x="445" y="228" text-anchor="middle">96</text>
+      <text class="s" x="515" y="228" text-anchor="middle">112</text>
+      <text class="s" x="585" y="228" text-anchor="middle">128</text>
+      <text class="s" x="95" y="244" text-anchor="middle">7.5 GB</text>
+      <text class="s" x="165" y="244" text-anchor="middle">8.1</text>
+      <text class="s" x="235" y="244" text-anchor="middle">8.8</text>
+      <text class="s" x="305" y="244" text-anchor="middle">9.4</text>
+      <text class="s" x="375" y="244" text-anchor="middle">10.0</text>
+      <text class="s" x="445" y="244" text-anchor="middle">10.7</text>
+      <text class="s" x="515" y="244" text-anchor="middle">11.3</text>
+      <text class="s" x="585" y="244" text-anchor="middle">12.3</text>
+      <text class="s" x="60" y="259">frames/window · peak VRAM</text>
+    </svg>
+    <figcaption>Window-size sweep recorded in the <code>vggt_reconstruct.py</code> header (RTX 5070 Ti, bf16, 518×392 input, 1,036 tokens/frame): ms per frame by frames per window. The GPU is at 100% at every size. Cost per frame rises with window size because global attention is quadratic in frames, while consistency improves. Past ~110 frames, Windows' WDDM driver pages VRAM into shared system memory without raising OOM, so the job silently runs 3× slower.</figcaption>
+  </figure>
+</section>
+
+<!-- ================================================================ 9 -->
+<section id="viz">
+  <h2><span class="n">§9</span>Live viewer (Watch live)</h2>
+  <div class="col">
+    <p><code>recon_viz.ReconViz</code> is a small <code>ThreadingTCPServer</code> started inside the job process. It serves one HTML page and a <code>/events</code> Server-Sent Events stream over HTTP/1.0 (no Content-Length, never chunked). Each window pushes four message types: <code>pts</code> (new fused points decimated to 4,000 by <code>linspace</code>, re-centred on the first point pushed because browsers lose float precision at UTM scale), <code>frame</code> (the last frame of the window as a base64 JPEG), <code>window</code> (fps, keep %, seam scale and residual, blur), and at the end <code>report</code>. When the report arrives the page fetches <code>/mesh.ply</code> (falling back to <code>/cloud.ply</code>) and switches from the growing preview to an explorable view.</p>
+    <p>It is a preview channel, not part of the data path. Each browser tab has a 200-message queue that drops its oldest message rather than block, so a slow or closed tab cannot affect the reconstruction.</p>
+  </div>
+</section>
+
+<!-- ================================================================ 10 -->
+<section id="android">
+  <h2><span class="n">§10</span>Android capture app</h2>
+  <div class="col"><p>Kotlin, about 5,500 lines, <code>com.rtvio.mapper</code> 1.1-studio (versionCode 2). The phone only captures and transmits; all reconstruction runs on the desktop.</p></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Package</th><th>Class</th><th>Job</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">capture</td><td><code>CameraCapture</code></td><td>CameraX Preview + ImageAnalysis (YUV_420_888, <code>KEEP_ONLY_LATEST</code>); parallel encode, in-order delivery</td></tr>
+      <tr><td class="mono">capture</td><td><code>FrameEncoder</code></td><td>YUV planes → rotated NV21 → JPEG, reusing all buffers</td></tr>
+      <tr><td class="mono">capture</td><td><code>LocalSessionRecorder</code></td><td>RECORD LOCALLY: writes the session layout to phone storage behind a 256-entry writer queue</td></tr>
+      <tr><td class="mono">net</td><td><code>StreamClient</code></td><td>The socket: one writer, priority draining, reconnect with backoff, command reader</td></tr>
+      <tr><td class="mono">net</td><td><code>FrameSpool</code></td><td>Disk-backed FIFO so a recording never drops a frame</td></tr>
+      <tr><td class="mono">net</td><td><code>Protocol</code>, <code>ReceiverProbe</code>, <code>SessionTransferClient</code>, <code>ServerDiscovery</code></td><td>Wire encoding; bare connect-and-close reachability probe; offline-session upload; mDNS <code>_rtvio._tcp</code> via NsdManager</td></tr>
+      <tr><td class="mono">sensors</td><td><code>SensorDataCollector</code>, <code>GpsCollector</code></td><td>Accel + gyro at 100 Hz, time-aligned; raw GNSS fixes</td></tr>
+      <tr><td class="mono">service</td><td><code>StreamingSession</code>, <code>StreamingForegroundService</code></td><td>The state machine in §3.2; keeps the process alive with a wake lock</td></tr>
+      <tr><td class="mono">data</td><td><code>CameraIntrinsics</code>, <code>SettingsManager</code>, <code>DeviceSpecsCollector</code>, <code>LocalSessions</code></td><td>K for the frames actually sent; typed preferences; device specs screen; saved-session listing</td></tr>
+      <tr><td class="mono">ui</td><td><code>MainActivity</code>, <code>SettingsActivity</code>, <code>RecordingsActivity</code>, <code>PhoneSpecsActivity</code></td><td>Main screen offers STREAM only when the probe finds a receiver; RECORD LOCALLY is always offered</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="twocol">
+    <div>
+      <h3>Camera pipeline</h3>
+      <p class="small">Software JPEG limits frame rate (one 4 MP capture ran at ~15 fps), so each frame is split. The analyzer thread copies the planes into one of <b>4 encoder slots</b> before the <code>ImageProxy</code> closes. Compression then runs on <b>2 threads</b>, and a single emitter thread waits on the futures in submission order, so frames arrive in capture order. When all four slots are busy, the frame is skipped and counted in <code>skippedCount</code>. Frames are timestamped at <em>sensor exposure</em>, converted to wall-clock time, rather than after encoding. The AE target FPS range is chosen from the ranges the device advertises, preferring a fixed <code>[t,t]</code>. A software gate with 10% tolerance enforces the cap, because without the tolerance normal jitter would reject every other frame.</p>
+      <h3>Encoder</h3>
+      <p class="small">Rotation happens while the planes are copied into NV21, which saves a pass and a second multi-MB buffer. NV21 orders chroma V then U, the reverse of the YUV_420_888 plane order; swapping them turns red to blue. <code>ExposedByteArrayOutputStream</code> hands out its backing array, so there is no per-frame copy for the garbage collector.</p>
+      <h3>Intrinsics</h3>
+      <p class="small"><code>LENS_INTRINSIC_CALIBRATION</code> is in active-array pixels (e.g. 4000×3000), so it is mapped through the same centred crop and scale CameraX uses to fill the buffer, then through the frame rotation. A (0,0) principal point falls back to the image centre. Without a calibration, focal length ÷ sensor size is used; without either, 0.8 × width.</p>
+    </div>
+    <div>
+      <h3>Socket writer priority</h3>
+      <p class="small">On every pass, <code>writeLoop</code> drains in this order:</p>
+      <ol class="small">
+        <li><b>Control queue</b>: IMU, GPS, STATUS, intrinsics (capacity 512)</li>
+        <li><b>Spool</b>: recorded frames, oldest first</li>
+        <li><b>Preview slot</b>: latest viewfinder image only</li>
+        <li><b>Live video queue</b>: capacity 10, oldest frame evicted when full, polled for 20 ms</li>
+      </ol>
+      <p class="small">The socket uses TCP_NODELAY and a 256 KB send buffer, with a 5 s connect timeout and a 1.5 s greeting timeout. Reconnect backoff doubles up to 60 s. An active recording always reconnects within 2 s, whatever the auto-reconnect setting, because its spool still has to reach the desktop.</p>
+      <h3>FrameSpool</h3>
+      <p class="small">Records are <code>i32 length</code> + packet in a file under <code>filesDir/spool/</code>. When the reader catches up the file is truncated to zero, so it never grows beyond the largest backlog. It refuses writes when free space drops below 300 MB, checked every 32 records (<code>statfs</code> is too slow to call per frame).</p>
+      <h3>IMU &amp; GPS</h3>
+      <p class="small">Accelerometer and gyroscope fire independently. Pairing each accel sample with the latest gyro sample leaves up to 10 ms of staleness, which is 0.9° of error during a 90°/s pan. Instead, accel samples are held until a later gyro sample arrives, and the gyro value is <em>linearly interpolated</em> onto each accel timestamp. Batches flush every 50 ms on an URGENT_AUDIO-priority HandlerThread. GPS uses <code>GPS_PROVIDER</code> only, not fused location, because WiFi and cell positioning give plausible fixes that can be hundreds of metres off.</p>
+    </div>
+  </div>
+  <div class="col">
+    <p class="small muted">Build: compileSdk / targetSdk 34, minSdk 24, JDK 17, viewBinding, R8 minify and resource shrinking in release (no signing config committed). The foreground service types (<code>dataSync|camera|location</code>) are declared at runtime, because from Android 14 starting a <code>location</code>-type service without the permission throws, so indoor mode must not request it.</p>
+  </div>
+</section>
+
+<!-- ================================================================ 11 -->
+<section id="others">
+  <h2><span class="n">§11</span>Other entry points</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Command</th><th>What it is</th></tr></thead>
+    <tbody>
+      <tr><td><code>python -m rtvio.vggt_reconstruct</code></td><td>The engine run by hand; the <code>rtvio-reconstruct</code> console script</td></tr>
+      <tr><td><code>python -m rtvio.vggt_live</code></td><td>The same windows fed from a v1 socket as frames arrive. Wall time becomes <code>max(capture, vggt)</code> plus one window instead of <code>capture + vggt</code>. Windows run on the packet thread, so the phone drops video during each 8–15 s pass (measured: 579 frames, ~5.7 fps arrived over a 101 s session). A connection with fewer than 2 frames is treated as the app's reachability probe, and the receiver keeps listening</td></tr>
+      <tr><td><code>python -u -m rtvio.live_pipeline</code></td><td>The older real-time monocular VO path: LK tracks, <code>solvePnPRansac</code> pose, windowed BA with a gyro prior, re-anchoring to GPS fixes, plane-sweep dense stereo, 2.5D DSM mesh. Also used for <code>--record-only</code></td></tr>
+      <tr><td><code>python -m rtvio.view_output &lt;dir&gt;</code></td><td>Static three.js viewer over <code>mesh_poisson.glb</code></td></tr>
+      <tr><td><code>rtvioapk/tools/mock_receiver.py</code></td><td>Reference v1 receiver: validates the wire format, reports rates, <code>--view</code>, <code>--save-frames</code>, <code>--advertise</code> (mDNS), <code>--sessions-dir</code> for Transfer</td></tr>
+      <tr><td><code>tools/calibrate_camera.py</code> · <code>capture_calibration_frames.py</code> · <code>import_frames_as_session.py</code></td><td>Checkerboard calibration fallback; converts a folder of frames into a session</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ================================================================ 12 -->
+<section id="stack">
+  <h2><span class="n">§12</span>Everything used</h2>
+
+  <h3>Runtime on this machine</h3>
+  <div class="tbl"><table>
+    <tbody>
+      <tr><td>OS</td><td>Windows 11 Pro (10.0.26200)</td></tr>
+      <tr><td>Python</td><td>3.13.15 (MSC v.1944, 64-bit)</td></tr>
+      <tr><td>PyTorch</td><td>2.12.0.dev20260408+cu128 (CUDA 12.8); nightly, needed for the Blackwell GPU</td></tr>
+      <tr><td>GPU</td><td>NVIDIA GeForce RTX 5070 Ti, 16,303 MiB (earlier development on a 4 GB GTX 1650)</td></tr>
+      <tr><td>Test phone</td><td>vivo I2206, Android 14 (from <code>session_meta.json</code>)</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Python libraries</h3>
+  <div class="tbl"><table>
+    <thead><tr><th>Package</th><th>Extra</th><th>Used for</th></tr></thead>
+    <tbody>
+      <tr><td><code>numpy</code></td><td>core</td><td>Everything off the GPU: voxel merge, geometry, reports</td></tr>
+      <tr><td><code>opencv-python</code></td><td>core</td><td>JPEG decode and encode, rotation, INTER_AREA resize, video frame extraction, Laplacian blur score</td></tr>
+      <tr><td><code>scipy</code></td><td>core</td><td><code>cKDTree</code> (outlier filter, Poisson trim, colour transfer), sparse connected components</td></tr>
+      <tr><td><code>laspy</code></td><td>core</td><td>LAS 1.2 export with UTM offsets and scales</td></tr>
+      <tr><td><code>torch</code> / <code>torchvision</code></td><td>installed separately</td><td>VGGT inference and all per-pixel GPU work in <code>fusion.py</code></td></tr>
+      <tr><td><code>huggingface_hub</code>, <code>einops</code>, <code>safetensors</code></td><td>vggt</td><td>Checkpoint download and VGGT's own dependencies</td></tr>
+      <tr><td><code>pymeshlab</code></td><td>mesh</td><td>Screened Poisson surface reconstruction</td></tr>
+      <tr><td><code>trimesh</code></td><td>mesh</td><td>OBJ and GLB export</td></tr>
+      <tr><td><code>ultralytics</code></td><td>masking</td><td>YOLOv8-seg dynamic-object masks</td></tr>
+      <tr><td><code>matplotlib</code></td><td>optional</td><td><code>trajectory_check.png</code> (Agg backend; skipped with a warning if missing)</td></tr>
+      <tr><td>stdlib</td><td>—</td><td><code>http.server</code>, <code>socketserver</code>, <code>socket</code>, <code>threading</code>, <code>subprocess</code>, <code>struct</code>, <code>json</code>, <code>concurrent.futures</code>; there is no web framework</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Models and weights</h3>
+  <div class="tbl"><table>
+    <tbody>
+      <tr><td><b>VGGT-1B</b> (Meta FAIR, CVPR 2025)</td><td>Code as a git submodule at <code>rtvio/third_party/vggt</code> (github.com/facebookresearch/vggt); weights <code>facebook/VGGT-1B</code>, ~5 GB, at <code>data/models/vggt1b_model.pt</code></td></tr>
+      <tr><td><b>YOLOv8n-seg</b> (COCO)</td><td><code>data/models/yolov8n-seg.pt</code>, the default mask for ground-level and oblique footage (19 dynamic classes)</td></tr>
+      <tr><td><b>YOLOv8 VisDrone</b></td><td><code>Mahadih534/YoloV8-VisDrone</code>, <code>--masking-preset nadir_aerial</code>, imgsz 1280. Stock COCO detects no cars from directly overhead</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Web</h3>
+  <div class="tbl"><table>
+    <tbody>
+      <tr><td>three.js r128</td><td>Vendored in <code>studio/web/vendor/</code> with <code>OrbitControls</code> and <code>PLYLoader</code>; <code>recon_viz</code> and <code>view_output</code> load the same revision from jsDelivr</td></tr>
+      <tr><td>Browser APIs</td><td>fetch polling, <code>EventSource</code> (SSE), MJPEG via <code>&lt;img&gt;</code>, Canvas 2D sparkline, WebGL</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Android</h3>
+  <div class="tbl"><table>
+    <tbody>
+      <tr><td>Language / build</td><td>Kotlin, Gradle (wrapper), Android Gradle plugin, JDK 17, <code>adb installDebug</code></td></tr>
+      <tr><td>CameraX 1.3.1</td><td><code>camera-core</code>, <code>camera-camera2</code> (with Camera2Interop for the AE FPS range), <code>camera-lifecycle</code>, <code>camera-view</code></td></tr>
+      <tr><td>Kotlin coroutines 1.7.3</td><td>Socket loops, StateFlow and SharedFlow for UI state</td></tr>
+      <tr><td>AndroidX</td><td>core-ktx 1.12, appcompat 1.6.1, activity-ktx 1.8.2, lifecycle-runtime-ktx 2.7, preference-ktx 1.2.1, recyclerview 1.3.2, constraintlayout 2.1.4</td></tr>
+      <tr><td>Material 1.11</td><td>Dialogs, snackbars</td></tr>
+      <tr><td>Platform</td><td><code>NsdManager</code> (mDNS), <code>LocationManager</code>, <code>SensorManager</code>, <code>YuvImage</code> JPEG, foreground service with wake lock; <code>org.json</code> for STATUS</td></tr>
+      <tr><td>Tests</td><td>JUnit 4.13.2: <code>ProtocolTest</code>, <code>FrameSpoolTest</code></td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Algorithms and methods</h3>
+  <div class="tbl"><table>
+    <tbody>
+      <tr><td>VGGT feed-forward multi-view depth + camera</td><td>Wang et al., CVPR 2025</td></tr>
+      <tr><td>Chunked inference + overlapping-chunk Sim(3)</td><td>The VGGT-Long recipe, without loop closure</td></tr>
+      <tr><td>Similarity transform</td><td>Umeyama 1991, weighted; batched 3-point RANSAC; Cauchy IRLS with MAD scale</td></tr>
+      <tr><td>Screened Poisson reconstruction</td><td>Kazhdan &amp; Hoppe 2013, via MeshLab</td></tr>
+      <tr><td>Statistical outlier removal</td><td>Open3D's <code>remove_statistical_outlier</code> criterion, reimplemented</td></tr>
+      <tr><td>Transverse Mercator / UTM</td><td>Snyder 1987 closed form, WGS84, zone fixed from the reference longitude</td></tr>
+      <tr><td>Blur</td><td>Variance of the Laplacian</td></tr>
+      <tr><td>Clock alignment</td><td>Paired <code>wall_ms</code>/<code>elapsed_ns</code> median (Studio); receive-lag minimum filter (<code>stream/clock.py</code>)</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>Not used, and why</h3>
+  <div class="col"><p class="small">COLMAP, Open3D, GTSAM, pyproj and rasterio had no Windows wheel for Python 3.13 on this machine when checked. Their functions are implemented directly: Sim(3) alignment, UTM projection, outlier filtering, point-to-mesh distance, plane-sweep stereo, and a <code>.prj</code> sidecar instead of <code>laspy.add_crs()</code>. The earlier LingBot-Map track (it needed FlashInfer under WSL2) was dropped for VGGT on 2026-09-14.</p></div>
+</section>
+
+<!-- ================================================================ 13 -->
+<section id="measured">
+  <h2><span class="n">§13</span>Measured on this machine</h2>
+  <div class="col"><p>Taken from the <code>CHECKPOINT_REPORT.md</code> files on disk. All four runs used Studio defaults: 64-frame windows, overlap 8, stride 1, confidence percentile 50, min views 2, Poisson depth 10, no GPS.</p></div>
+  <div class="tbl"><table>
+    <thead><tr><th>Run</th><th>Source</th><th class="num">Frames</th><th class="num">Capture</th><th class="num">VGGT</th><th class="num">Peak VRAM</th><th class="num">Wall</th><th class="num">Points</th><th class="num">Faces</th><th>Seam scale min / med / max</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">161232 · recon-1</td><td>Streamed to Studio, 1080×1920, q70</td><td class="num">2,221</td><td class="num">93.3 s</td><td class="num">6.9 f/s</td><td class="num">7,983 MB</td><td class="num">398.1 s</td><td class="num">8,257,444</td><td class="num">4,567,172</td><td class="mono">0.351 / 0.996 / 1.187</td></tr>
+      <tr><td class="mono">164518 · recon-1</td><td>RECORD LOCALLY → Transfer</td><td class="num">1,095</td><td class="num">44.2 s</td><td class="num">4.4 f/s</td><td class="num">9,512 MB</td><td class="num">305.0 s</td><td class="num">4,382,200</td><td class="num">4,177,734</td><td class="mono">0.293 / 0.481 / 0.755</td></tr>
+      <tr><td class="mono">164518 · recon-2</td><td>Same session, re-run</td><td class="num">1,095</td><td class="num">44.2 s</td><td class="num">4.4 f/s</td><td class="num">9,512 MB</td><td class="num">305.8 s</td><td class="num">4,385,873</td><td class="num">4,169,047</td><td class="mono">0.293 / 0.481 / 0.755</td></tr>
+      <tr><td class="mono">abc-1</td><td>Video file</td><td class="num">2,093</td><td class="num">34.9 s</td><td class="num">6.9 f/s</td><td class="num">8,342 MB</td><td class="num">343.1 s</td><td class="num">6,579,423</td><td class="num">2,066,247</td><td class="mono">0.290 / 0.564 / 1.285 · 2 fallbacks</td></tr>
+    </tbody>
+  </table></div>
+  <div class="col">
+    <ul class="small">
+      <li><b>Run-to-run repeatability:</b> re-running 164518 changed the point count by 0.08% and the seam scales not at all.</li>
+      <li><b>Real-time factor:</b> 0.10×–0.23× (capture time ÷ wall time). By arithmetic from these numbers, a 10-minute 30 fps video (18,000 frames) needs ~43 min of VGGT alone at 6.9 f/s. At <code>--frame-stride 3</code> it needs ~14.5 min, which is at the edge of PS-17's 15-minute budget before fusion and meshing.</li>
+      <li><b>Streamed take 161232</b> finished as <code>complete: false</code>: the phone reported 2,220 frames sent, the desktop received 2,221, and the log shows 25 frame gaps. The mismatch was recorded and warned about rather than hidden.</li>
+      <li><b>Seam scale:</b> both 164518 runs had a median of 0.48, below the README's "worth investigating" threshold of 0.5. Median seam residuals stayed low (0.012), so the seams themselves fit well; VGGT's per-window scale simply varied a lot on that footage.</li>
+    </ul>
+  </div>
+</section>
+
+<!-- ================================================================ 14 -->
+<section id="tests">
+  <h2><span class="n">§14</span>Tests</h2>
+  <div class="col"><p>Seven plain scripts (no pytest needed), all CPU-only and each runs in a few seconds; none needs the GPU or the checkpoint. There are 47 test functions in total.</p></div>
+  <div class="tbl"><table>
+    <thead><tr><th>File</th><th class="num">Tests</th><th>Pins down</th></tr></thead>
+    <tbody>
+      <tr><td><code>test_fusion.py</code></td><td class="num">8</td><td>Exact Umeyama; robust Sim(3) under outliers and depth noise; unproject and normals; continuity mask; torch gate matching the numpy gate; voxel accumulator; PLY round-trip; Poisson trim removing invented surface</td></tr>
+      <tr><td><code>test_vggt_bridge.py</code></td><td class="num">7</td><td>Dropped frames skipped; too few frames rejected; GPS field mapping; missing GPS falls back to relative mode; confidence gate on a floor-majority distribution</td></tr>
+      <tr><td><code>test_georeference_vggt.py</code></td><td class="num">2</td><td>Noiseless recovery; Monte-Carlo GPS-noise sweep against the 1 m target</td></tr>
+      <tr><td><code>test_stream.py</code></td><td class="num">10</td><td>Wire round-trip; short reads; clock domains; ENU round-trip; reordering; late-drop reporting; intrinsics delivered once</td></tr>
+      <tr><td><code>test_geometry.py</code></td><td class="num">9</td><td>Camera-axis conventions, projection agreement, triangulation, solvePnP round-trip, inverse-depth planes</td></tr>
+      <tr><td><code>test_pose_pipeline.py</code></td><td class="num">8</td><td>Gyro integration, leveling, GPS-course yaw, GPS re-anchor and accuracy gate (live path)</td></tr>
+      <tr><td><code>test_relative_reinit.py</code></td><td class="num">3</td><td>Two-view reinitialisation, including rejection of a stale window</td></tr>
+    </tbody>
+  </table></div>
+  <div class="col"><p class="small muted">Studio itself (<code>server.py</code>, <code>jobs.py</code>, <code>phone_link.py</code>) has no tests. It has been exercised only against the real phone and with <code>mock_receiver</code>-style replays.</p></div>
+</section>
+
+<!-- ================================================================ 15 -->
+<section id="gaps">
+  <h2><span class="n">§15</span>Gaps found while reading</h2>
+  <div class="col"><p>These came up while tracing the code for this document. None has been fixed yet.</p></div>
+  <div class="issues">
+    <div class="issue">
+      <span class="chip bad">Security</span>
+      <div>
+        <h4>A Transfer from any device on the LAN can write files outside <code>data/sessions/</code></h4>
+        <p>The session id and each <code>rel_path</code> come straight from the wire and are passed to <code>os.path.join</code> without validation. An id like <code>..\..\x</code>, an absolute path, or a file path containing <code>../</code> escapes the sessions root. Port 5555 listens on 0.0.0.0 with no authentication. Fix: validate the id against <code>SESSION_ID_RE</code> and <code>realpath</code>-check every destination, the same way the HTTP file routes already do.</p>
+        <div class="where">studio/phone_link.py:383 · :395</div>
+      </div>
+    </div>
+    <div class="issue">
+      <span class="chip warn">Behaviour</span>
+      <div>
+        <h4>Studio's default <code>gps_mode: "off"</code> disables GPS auto-detection</h4>
+        <p><code>build_command</code> always passes <code>--gps-mode off</code>. <code>reconstruct_from_recording</code> only switches to <code>global</code> automatically when <code>gps_mode is None</code>, so an outdoor take with real fixes stays un-georeferenced unless the user changes the setting. Consider a third option, "auto", that omits the flag.</p>
+        <div class="where">studio/server.py:48 · studio/jobs.py:108–111 · vggt_reconstruct.py:423</div>
+      </div>
+    </div>
+    <div class="issue">
+      <span class="chip warn">Offline</span>
+      <div>
+        <h4>Watch live needs internet access</h4>
+        <p>The Studio page vendors three.js, but the <code>recon_viz</code> page loads it from jsDelivr. In the field with no uplink, the live viewer page renders blank. <code>recon_viz</code> also binds 0.0.0.0, while Studio's own UI binds 127.0.0.1.</p>
+        <div class="where">recon_viz.py:91–93 · :377</div>
+      </div>
+    </div>
+    <div class="issue">
+      <span class="chip warn">Accuracy</span>
+      <div>
+        <h4>Georeferencing is still above the ≤ 1 m target</h4>
+        <p><code>test_georeference_vggt.py</code>'s noise sweep shows consumer-grade GPS noise keeps the global Sim(3) above 1 m. RTK or PPK input is the strongest known way to close the gap. None of the four runs in §13 used GPS.</p>
+        <div class="where">tests/test_georeference_vggt.py</div>
+      </div>
+    </div>
+    <div class="issue">
+      <span class="chip info">Unwired</span>
+      <div>
+        <h4><code>surface.close_vertical_gaps</code> exists but is never called</h4>
+        <p>This new function in the working tree extrudes vertical "skirts" from floating roof components down to the ground. The README says that exact heuristic was "deliberately not built". Decide which is true, then wire it in behind a flag or delete it.</p>
+        <div class="where">surface.py:156</div>
+      </div>
+    </div>
+    <div class="issue">
+      <span class="chip info">Minor</span>
+      <div>
+        <h4>Transferred sessions store a timestamp in <code>boot_to_wall_s</code></h4>
+        <p><code>_normalize_transferred_meta</code> copies <code>started_at_wall_ms</code> (epoch milliseconds, e.g. 1789470918663) into a field that means "boot-clock-to-wall offset in seconds" for live takes. Nothing reads it today, but the field now has two meanings.</p>
+        <div class="where">studio/phone_link.py:454</div>
+      </div>
+    </div>
+    <div class="issue">
+      <span class="chip ok">By design</span>
+      <div>
+        <h4>Job history is in memory; the web UI has no authentication</h4>
+        <p>After a restart, job ids, logs and GPU stats for past jobs are gone, while all files remain and stay operable. The control page can start the phone camera and GPU jobs, which is why it binds to localhost by default.</p>
+        <div class="where">studio/jobs.py · studio/server.py:12–14</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  Written from the working tree on branch <span class="mono">rtvio-python-pipeline</span> at <span class="mono">828f5e1</span> plus uncommitted changes (23 files, +2,125 / −344). Most of the Studio remote-control, video-file, transfer and live-VGGT work described here is not yet committed. Line numbers refer to that working tree.
+</footer>
+</main>
+</div>
+
+</body>
+</html>

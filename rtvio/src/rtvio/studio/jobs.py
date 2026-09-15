@@ -14,6 +14,8 @@ goes (stage, window i/n, ETA), plus its full stdout in job.log.
 """
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -77,17 +79,31 @@ def next_recon_dir(session_dir):
     return os.path.join(session_dir, "recon-%d" % k)
 
 
-def build_command(session_dir, out_dir, params):
-    """Maps the web UI's reconstruction options onto vggt_reconstruct's CLI."""
+def next_video_out_dir(video_root, video_path):
+    """A fresh <video_root>/<basename>-<n>/ for a one-shot video-file job -
+    there is no existing session directory to nest a recon-N under, since
+    the video lives wherever the user pointed us, not under video_root."""
+    base = re.sub(r"[^\w.-]+", "_", os.path.splitext(os.path.basename(video_path))[0]) or "video"
+    k = 1
+    while True:
+        d = os.path.join(video_root, "%s-%d" % (base, k))
+        if not os.path.exists(d):
+            return d
+        k += 1
+
+
+def build_command(kind, source, out_dir, params, viz_port=None):
+    """Maps the web UI's reconstruction options onto vggt_reconstruct's CLI.
+    kind: "recording" (source = session dir) or "video" (source = video file)."""
     cmd = [sys.executable, "-u", "-m", "rtvio.vggt_reconstruct",
-           "--from-recording", session_dir, "--out", out_dir,
-           "--progress", os.path.join(out_dir, "progress.json")]
+           ("--video" if kind == "video" else "--from-recording"), source,
+           "--out", out_dir, "--progress", os.path.join(out_dir, "progress.json")]
     flag_map = {
         "window_frames": "--window-frames", "overlap": "--overlap",
         "frame_stride": "--frame-stride", "conf_percentile": "--conf-percentile",
         "poisson_depth": "--poisson-depth", "gps_mode": "--gps-mode",
         "voxel_factor": "--voxel-factor", "min_views": "--min-views",
-        "max_frames": "--max-frames",
+        "max_frames": "--max-frames", "intrinsics": "--intrinsics",
     }
     for key, flag in flag_map.items():
         v = params.get(key)
@@ -99,18 +115,28 @@ def build_command(session_dir, out_dir, params):
         cmd.append("--no-masking")
     if params.get("extras", False):
         cmd.append("--extras")
+    if viz_port:
+        # --no-viz-hold: this process's lifecycle is owned by ReconQueue,
+        # which needs it to actually exit when done so the next queued job
+        # can start - see vggt_reconstruct.py's matching --no-viz-hold help.
+        cmd += ["--live-viz", "--viz-port", str(viz_port), "--no-viz-hold"]
     return cmd
 
 
 class ReconJob:
     _ids = iter(range(1, 1 << 30))
 
-    def __init__(self, session_dir, params):
+    def __init__(self, kind, source, params):
+        """kind: "recording" (source = a rtvio.studio session directory) or
+        "video" (source = a plain video file path, no phone involved)."""
         self.id = next(self._ids)
-        self.session_dir = session_dir
-        self.session_id = os.path.basename(session_dir.rstrip("\\/"))
+        self.kind = kind
+        self.source = source
+        self.session_id = os.path.basename(source.rstrip("\\/")) if kind == "recording" else None
+        self.label = self.session_id or os.path.splitext(os.path.basename(source))[0]
         self.params = dict(params)
         self.out_dir = None
+        self.viz_port = None       # set by ReconQueue._run when this job starts
         self.state = "queued"
         self.created = time.time()
         self.started = None
@@ -141,9 +167,10 @@ class ReconJob:
 
     def snapshot(self):
         return {
-            "id": self.id, "session": self.session_id, "state": self.state,
-            "params": self.params,
+            "id": self.id, "kind": self.kind, "session": self.session_id, "label": self.label,
+            "state": self.state, "params": self.params,
             "out_dir": os.path.basename(self.out_dir) if self.out_dir else None,
+            "viz_url": ("http://127.0.0.1:%d" % self.viz_port) if self.state == "running" and self.viz_port else None,
             "created": self.created, "started": self.started, "finished": self.finished,
             "elapsed_s": round((self.finished or time.time()) - self.started, 1) if self.started else None,
             "returncode": self.returncode, "error": self.error,
@@ -153,9 +180,11 @@ class ReconJob:
 
 
 class ReconQueue:
-    def __init__(self, gpu_monitor=None, cwd=None):
+    def __init__(self, gpu_monitor=None, cwd=None, video_root=None, viz_port=None):
         self.gpu = gpu_monitor
         self.cwd = cwd
+        self.video_root = video_root
+        self.viz_port = viz_port      # same port every job - they run one at a time (see module docstring)
         self.jobs = []
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -165,11 +194,19 @@ class ReconQueue:
         return self
 
     def submit(self, session_dir, params):
-        job = ReconJob(session_dir, params)
+        job = ReconJob("recording", session_dir, params)
         with self._lock:
             self.jobs.append(job)
         self._wake.set()
         print("[recon] queued job %d for %s" % (job.id, job.session_id), flush=True)
+        return job
+
+    def submit_video(self, video_path, params):
+        job = ReconJob("video", video_path, params)
+        with self._lock:
+            self.jobs.append(job)
+        self._wake.set()
+        print("[recon] queued job %d for video %s" % (job.id, video_path), flush=True)
         return job
 
     def cancel(self, job_id):
@@ -185,6 +222,23 @@ class ReconQueue:
             job.proc.terminate()
             return True
         return False
+
+    def delete(self, job_id):
+        """Removes a finished/failed/cancelled job's entry and deletes its
+        out_dir from disk - for a "recording" job that's just one recon-N
+        attempt (the session's captured frames are untouched); for a
+        "video" job it's the job's whole output directory. Refuses a
+        queued/running/cancelling job - cancel() it first."""
+        with self._lock:
+            job = next((j for j in self.jobs if j.id == job_id), None)
+            if job is None:
+                return False, "no such job"
+            if job.state in ("queued", "running", "cancelling"):
+                return False, "cancel it first"
+            self.jobs.remove(job)
+        if job.out_dir and os.path.isdir(job.out_dir):
+            shutil.rmtree(job.out_dir, ignore_errors=True)
+        return True, None
 
     def busy_with(self, session_id):
         with self._lock:
@@ -209,9 +263,11 @@ class ReconQueue:
             self._run(job)
 
     def _run(self, job):
-        job.out_dir = next_recon_dir(job.session_dir)
+        job.out_dir = (next_video_out_dir(self.video_root, job.source) if job.kind == "video"
+                       else next_recon_dir(job.source))
         os.makedirs(job.out_dir, exist_ok=True)
-        cmd = build_command(job.session_dir, job.out_dir, job.params)
+        job.viz_port = self.viz_port
+        cmd = build_command(job.kind, job.source, job.out_dir, job.params, self.viz_port)
         env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
         job.state = "running"
         job.started = time.time()

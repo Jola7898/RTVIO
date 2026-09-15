@@ -208,6 +208,20 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
+        <TextView
+            android:id="@+id/tvReceiverHint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_marginEnd="16dp"
+            android:layout_marginBottom="4dp"
+            android:gravity="center"
+            android:textColor="?android:attr/textColorSecondary"
+            android:textSize="12sp"
+            android:visibility="gone"
+            tools:text="No receiver at 192.168.1.42 — recording locally only"
+            tools:visibility="visible" />
+
         <!-- Controls -->
         <LinearLayout
             android:layout_width="match_parent"
@@ -223,6 +237,14 @@
                 android:layout_height="wrap_content"
                 android:layout_weight="2"
                 android:text="@string/action_connect" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnRecordLocal"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:layout_weight="2"
+                android:text="@string/action_record_local" />
 
             <com.google.android.material.button.MaterialButton
                 android:id="@+id/btnRecord"

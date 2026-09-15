@@ -41,6 +41,16 @@ object Protocol {
     const val HEADER_COMMAND: Byte = 0xC0.toByte()
     const val HEADER_HANDSHAKE_ACK: Byte = 0xAA.toByte()
 
+    /**
+     * Phone -> desktop, one-shot bulk transfer of a locally-recorded session
+     * directory (see [com.rtvio.mapper.capture.LocalSessionRecorder]). Sent on
+     * its own connection, never mixed with live streaming: SESSION_BEGIN, then
+     * one SESSION_FILE header + raw bytes per file, then SESSION_END.
+     */
+    const val HEADER_SESSION_BEGIN: Byte = 0xE0.toByte()
+    const val HEADER_SESSION_FILE: Byte = 0xE1.toByte()
+    const val HEADER_SESSION_END: Byte = 0xE2.toByte()
+
     /** Largest JSON body a u16 length field can carry. */
     const val MAX_JSON_BYTES = 65535
 
@@ -192,6 +202,44 @@ object Protocol {
             .put(body)
             .array()
     }
+
+    /**
+     * struct SessionBeginPacket { u8 0xE0; u16 idLen; u8 id[idLen]; i32 fileCount; i64 totalBytes; }
+     *
+     * Opens a session transfer. [totalBytes] is the sum of every file about to
+     * follow, purely so the receiver can print progress; nothing on the wire
+     * depends on it being exact.
+     */
+    fun encodeSessionBegin(sessionId: String, fileCount: Int, totalBytes: Long): ByteArray {
+        val idBytes = sessionId.toByteArray(Charsets.UTF_8)
+        return ByteBuffer.allocate(1 + 2 + idBytes.size + 4 + 8).order(ByteOrder.BIG_ENDIAN)
+            .put(HEADER_SESSION_BEGIN)
+            .putShort(idBytes.size.toShort())
+            .put(idBytes)
+            .putInt(fileCount)
+            .putLong(totalBytes)
+            .array()
+    }
+
+    /**
+     * struct SessionFilePacket { u8 0xE1; u16 pathLen; u8 path[pathLen]; i64 size; }
+     *
+     * [relativePath] uses '/' separators regardless of host OS, and is
+     * immediately followed on the wire by exactly [fileSize] raw bytes - no
+     * further framing, since the size is already known.
+     */
+    fun encodeSessionFileHeader(relativePath: String, fileSize: Long): ByteArray {
+        val pathBytes = relativePath.toByteArray(Charsets.UTF_8)
+        return ByteBuffer.allocate(1 + 2 + pathBytes.size + 8).order(ByteOrder.BIG_ENDIAN)
+            .put(HEADER_SESSION_FILE)
+            .putShort(pathBytes.size.toShort())
+            .put(pathBytes)
+            .putLong(fileSize)
+            .array()
+    }
+
+    /** struct SessionEndPacket { u8 0xE2; } - every file has been sent. */
+    fun encodeSessionEnd(): ByteArray = byteArrayOf(HEADER_SESSION_END)
 
     /**
      * Reads one desktop -> phone packet: u8 0xC0; u16 len; u8 json[len].

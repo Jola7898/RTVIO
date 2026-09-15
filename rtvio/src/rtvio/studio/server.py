@@ -1,13 +1,15 @@
 """
-RTVIO Studio - browser control for phone capture + VGGT reconstruction.
+RTVIO Studio - browser control for drone and phone capture + VGGT reconstruction.
 
     python -m rtvio.studio [--port 8080] [--phone-port 5555] [--open]
 
-Then, on the phone: Settings -> Server IP = this PC's LAN address, port
-5555 -> back -> CONNECT. The page at http://127.0.0.1:8080 shows the
-phone's viewfinder, starts/stops recordings on it, queues every finished
-take for reconstruction, and opens cloud_raw.ply / mesh_poisson.ply in a
-3D viewer.
+Drone: in the page's Drone connection card, enter the drone's IP (the one
+iDronam's Add Device uses); the Studio pulls its RTSP video and MAVLink
+telemetry itself (drone_link.py). Phone: Settings -> Server IP = this PC's
+LAN address, port 5555 -> back -> CONNECT. The page at
+http://127.0.0.1:8080 shows either live view, starts/stops recordings,
+queues finished takes for reconstruction (a drone take always, the moment
+it stops), and opens cloud_raw.ply / mesh_poisson.ply in a 3D viewer.
 
 The web UI binds to 127.0.0.1 unless --web-host says otherwise: it can start
 the phone's camera and run GPU jobs, and has no authentication, so exposing
@@ -17,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import socket
 import threading
 import time
@@ -24,6 +27,7 @@ import urllib.parse
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .drone_link import DroneLink
 from .jobs import GpuMonitor, ReconQueue
 from .phone_link import PhoneLink
 
@@ -46,6 +50,18 @@ DEFAULT_SETTINGS = {
               "conf_percentile": 50, "poisson_depth": 10, "voxel_factor": 1.0,
               "min_views": 2, "gps_mode": "off", "masking": False, "extras": False},
     "auto_reconstruct": True,
+    # Drone (drone_link.py). ip is the drone / companion computer - the
+    # address iDronam's "Add Device" uses - and {ip} in video_url is replaced
+    # by it. mode is latched per take: "indoor" = vision-only, "outdoor" =
+    # record the drone's GPS and georeference. record_long_side 1280 for the
+    # same reason capture.resolution is 720p; video_delay_ms: see
+    # drone_link's TIMESTAMPS note.
+    "drone": {"enabled": True, "ip": "", "mavlink_port": 14550,
+              "video_url": "rtsp://{ip}:10000/drone_cam", "mode": "indoor",
+              "record_long_side": 1280, "jpeg_quality": 90, "video_delay_ms": 0,
+              # Lens calibration (camera_calib.py): checkerboard inner corners,
+              # and whether the live view shows the undistorted frame.
+              "calib_cols": 9, "calib_rows": 6, "preview_undistort": False},
 }
 
 SESSION_ID_RE = re.compile(r"^[\w.-]+$")
@@ -91,17 +107,24 @@ def _merge(base, override):
 
 
 class Studio:
-    def __init__(self, data_root, phone_host, phone_port):
+    def __init__(self, data_root, phone_host, phone_port, viz_port=8767):
         self.data_root = data_root
         self.sessions_root = os.path.join(data_root, "sessions")
+        self.video_root = os.path.join(data_root, "video_jobs")
         os.makedirs(self.sessions_root, exist_ok=True)
+        os.makedirs(self.video_root, exist_ok=True)
         self.settings_path = os.path.join(data_root, "studio_settings.json")
         self.settings = _merge(DEFAULT_SETTINGS, self._load_settings())
         self.gpu = GpuMonitor().start()
-        self.queue = ReconQueue(self.gpu, cwd=RTVIO_ROOT).start()
+        self.queue = ReconQueue(self.gpu, cwd=RTVIO_ROOT, video_root=self.video_root, viz_port=viz_port).start()
         self.phone = PhoneLink(self.sessions_root, phone_host, phone_port,
                                on_session_finalized=self._on_finalized)
         self.phone.start()
+        self.drone = DroneLink(self.sessions_root, self.settings["drone"],
+                               on_session_finalized=self._on_drone_finalized,
+                               camera_path=os.path.join(data_root, "drone_camera.json"),
+                               calib_root=os.path.join(data_root, "drone_calib"))
+        self.drone.start()
         self.lan = lan_addresses()
         self.phone_port = phone_port
 
@@ -118,13 +141,43 @@ class Studio:
         self.settings = _merge(self.settings, patch)
         with open(self.settings_path, "w") as f:
             json.dump(self.settings, f, indent=2)
+        if "drone" in (patch or {}):
+            self.drone.configure(self.settings["drone"])
         return self.settings
 
     # ---------------------------------------------------------- sessions --
 
     def _on_finalized(self, session_dir, meta):
         if self.settings.get("auto_reconstruct", True):
-            self.queue.submit(session_dir, self.settings["recon"])
+            self.queue.submit(session_dir, self.recon_params(session_dir))
+
+    def _on_drone_finalized(self, session_dir, meta):
+        # Unlike a phone take (settings.auto_reconstruct), a drone take goes
+        # to the GPU the moment it is saved.
+        self.queue.submit(session_dir, self.recon_params(session_dir))
+
+    def recon_params(self, session_dir, overrides=None):
+        """settings.recon - except that a drone take is reconstructed in the
+        mode it was flown in (the drone's own Indoor/Outdoor switch, latched
+        into session_meta.json), not the GPS setting phone takes and video
+        files use; and outdoor only if the drone actually recorded GPS."""
+        params = dict(self.settings["recon"])
+        try:
+            with open(os.path.join(session_dir, "session_meta.json")) as f:
+                meta = json.load(f)
+        except (OSError, ValueError):
+            meta = {}
+        if meta.get("origin") == "drone":
+            outdoor = meta.get("drone_mode") == "outdoor" and (meta.get("gps_fixes") or 0) > 0
+            params["gps_mode"] = "global" if outdoor else "off"
+            # A take recorded before the lens was calibrated carries no
+            # camera_intrinsics.json of its own: straighten it with today's
+            # calibration of the same camera (vggt_reconstruct checks the
+            # aspect ratio still matches).
+            if (self.drone.camera is not None
+                    and not os.path.exists(os.path.join(session_dir, "camera_intrinsics.json"))):
+                params["intrinsics"] = self.drone.camera_path
+        return _merge(params, overrides or {})
 
     def session_dir(self, sid):
         if not SESSION_ID_RE.match(sid or ""):
@@ -132,8 +185,86 @@ class Studio:
         d = os.path.join(self.sessions_root, sid)
         return d if os.path.isdir(d) else None
 
+    def video_job_dir(self, dirname):
+        if not SESSION_ID_RE.match(dirname or ""):
+            return None
+        d = os.path.join(self.video_root, dirname)
+        return d if os.path.isdir(d) else None
+
+    def delete_recon(self, sid, name):
+        """Deletes one recon-N output directory straight off disk - not
+        job-id based, since queue.jobs is in-memory and empty again after
+        every Studio restart while the files (and this delete button)
+        obviously need to keep working."""
+        d = self.session_dir(sid)
+        if d is None:
+            return False, "no such session"
+        if not re.match(r"^recon-\d+$", name or ""):
+            return False, "bad reconstruction name"
+        p = os.path.join(d, name)
+        if not os.path.isdir(p):
+            return False, "no such reconstruction"
+        if self.queue.busy_with(sid):
+            return False, "a reconstruction is still queued/running for this session"
+        shutil.rmtree(p, ignore_errors=True)
+        return True, None
+
+    def list_video_jobs(self, limit=50):
+        """Video-file jobs, read straight off video_root - like
+        list_sessions(), this survives a Studio restart even though
+        queue.jobs (in-memory) does not. A currently-tracked job is matched
+        in by its out_dir's basename purely to overlay live state/progress
+        on top of what's already on disk."""
+        out = []
+        try:
+            names = sorted(os.listdir(self.video_root), reverse=True)
+        except OSError:
+            names = []
+        live = {os.path.basename(j.out_dir): j for j in self.queue.jobs if j.out_dir}
+        for name in names[:limit]:
+            d = os.path.join(self.video_root, name)
+            if not os.path.isdir(d):
+                continue
+            job = live.get(name)
+            prog = None
+            try:
+                with open(os.path.join(d, "progress.json")) as f:
+                    prog = json.load(f)
+            except (OSError, ValueError):
+                pass
+            files = {}
+            for fn in PRIORITY_OUTPUTS + ("CHECKPOINT_REPORT.md",):
+                p = os.path.join(d, fn)
+                if os.path.exists(p):
+                    files[fn] = os.path.getsize(p)
+            out.append({
+                "dir": name,
+                "label": job.label if job else re.sub(r"-\d+$", "", name),
+                "job_id": job.id if job else None,
+                "state": job.state if job else None,
+                "viz_url": ("http://127.0.0.1:%d" % job.viz_port)
+                           if job and job.state == "running" and job.viz_port else None,
+                "progress": prog,
+                "files": files,
+            })
+        return out
+
+    def delete_video_job(self, dirname):
+        if not SESSION_ID_RE.match(dirname or ""):
+            return False, "bad name"
+        d = os.path.join(self.video_root, dirname)
+        if not os.path.isdir(d):
+            return False, "no such job"
+        live = next((j for j in self.queue.jobs if j.out_dir and os.path.basename(j.out_dir) == dirname), None)
+        if live is not None and live.state in ("queued", "running", "cancelling"):
+            return False, "cancel it first"
+        shutil.rmtree(d, ignore_errors=True)
+        return True, None
+
     def list_sessions(self, limit=50):
-        active = self.phone.active.id if self.phone.active is not None else None
+        active = self.drone.busy_ids()
+        if self.phone.active is not None:
+            active.add(self.phone.active.id)
         out = []
         try:
             names = sorted(os.listdir(self.sessions_root), reverse=True)
@@ -168,7 +299,7 @@ class Studio:
                 recons.append({"name": name, "progress": prog, "files": files})
             out.append({
                 "id": sid,
-                "recording": sid == active,
+                "recording": sid in active,
                 "meta": meta,
                 "thumb": "frames/000000.jpg" if os.path.exists(os.path.join(d, "frames", "000000.jpg")) else None,
                 "recons": recons,
@@ -180,6 +311,7 @@ class Studio:
         return {
             "time": time.time(),
             "phone": self.phone.snapshot(),
+            "drone": self.drone.snapshot(),
             "jobs": self.queue.snapshot(),
             "gpu": self.gpu.snapshot(n=90),
             "settings": self.settings,
@@ -259,13 +391,22 @@ def make_handler(studio):
                 return self._send(200, studio.state())
             if path == "/api/sessions":
                 return self._send(200, studio.list_sessions())
+            if path == "/api/video-jobs":
+                return self._send(200, studio.list_video_jobs())
             if path == "/api/preview.jpg":
                 _seq, jpeg = studio.phone.latest_seq, studio.phone.latest_jpeg
                 if jpeg is None:
                     return self._send(404, {"error": "no frame yet"})
                 return self._send(200, jpeg, "image/jpeg")
             if path == "/api/preview.mjpg":
-                return self._mjpeg()
+                return self._mjpeg(studio.phone)
+            if path == "/api/drone/preview.jpg":
+                jpeg = studio.drone.latest_jpeg
+                if jpeg is None:
+                    return self._send(404, {"error": "no frame yet"})
+                return self._send(200, jpeg, "image/jpeg")
+            if path == "/api/drone/preview.mjpg":
+                return self._mjpeg(studio.drone)
             m = re.match(r"^/api/jobs/(\d+)/log$", path)
             if m:
                 job = next((j for j in studio.queue.jobs if j.id == int(m.group(1))), None)
@@ -277,13 +418,18 @@ def make_handler(studio):
                 d = studio.session_dir(m.group(1))
                 p = self._inside(d, m.group(2)) if d else None
                 return self._file(p) if p else self._send(404, {"error": "not found"})
+            m = re.match(r"^/video_files/([\w.-]+)/(.+)$", path)
+            if m:
+                d = studio.video_job_dir(m.group(1))
+                p = self._inside(d, m.group(2)) if d else None
+                return self._file(p) if p else self._send(404, {"error": "not found"})
             return self._send(404, {"error": "not found"})
 
-        def _mjpeg(self):
+        def _mjpeg(self, source):
             """multipart/x-mixed-replace: an <img> tag renders it as live
             video with no JavaScript. Capped at ~12 fps - it is a viewfinder,
             and localhost bandwidth is not the concern, the browser's JPEG
-            decode is."""
+            decode is. source: the PhoneLink or DroneLink (wait_preview)."""
             boundary = "rtvioframe"
             self.send_response(200)
             self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=%s" % boundary)
@@ -294,7 +440,7 @@ def make_handler(studio):
             last = 0.0
             try:
                 while True:
-                    seq, jpeg = studio.phone.wait_preview(seq, timeout=2.0)
+                    seq, jpeg = source.wait_preview(seq, timeout=2.0)
                     if jpeg is None:
                         continue
                     wait = 1.0 / 12 - (time.monotonic() - last)
@@ -320,6 +466,26 @@ def make_handler(studio):
             if path == "/api/record/stop":
                 ok, res = studio.phone.stop_recording()
                 return self._send(200 if ok else 409, {"ok": ok, "session": res} if ok else {"ok": False, "error": res})
+            if path == "/api/drone/record/start":
+                ok, res = studio.drone.start_recording()
+                return self._send(200 if ok else 409, {"ok": ok, "session": res} if ok else {"ok": False, "error": res})
+            if path == "/api/drone/record/stop":
+                ok, res = studio.drone.stop_recording()
+                return self._send(200 if ok else 409, {"ok": ok, "session": res} if ok else {"ok": False, "error": res})
+            if path == "/api/drone/calib/start":
+                d = studio.settings["drone"]
+                ok, err = studio.drone.start_calibration(int(body.get("cols") or d.get("calib_cols") or 9),
+                                                         int(body.get("rows") or d.get("calib_rows") or 6))
+                return self._send(200 if ok else 409, {"ok": ok, "error": err})
+            m = re.match(r"^/api/drone/calib/(stop|solve|discard)$", path)
+            if m:
+                fn = {"stop": studio.drone.stop_calibration, "solve": studio.drone.solve_calibration,
+                      "discard": studio.drone.discard_calibration}[m.group(1)]
+                ok, res = fn()
+                return self._send(200 if ok else 409, {"ok": ok, "result": res} if ok else {"ok": False, "error": res})
+            if path == "/api/drone/camera/remove":
+                ok, _res = studio.drone.remove_camera_profile()
+                return self._send(200, {"ok": ok})
             if path == "/api/phone/ping":
                 studio.phone.ping()
                 return self._send(200, {"ok": True})
@@ -332,11 +498,38 @@ def make_handler(studio):
                     return self._send(404, {"ok": False, "error": "no such session"})
                 if not os.path.exists(os.path.join(d, "frame_timestamps.json")):
                     return self._send(409, {"ok": False, "error": "session is still recording"})
-                job = studio.queue.submit(d, _merge(studio.settings["recon"], body.get("recon") or {}))
+                job = studio.queue.submit(d, studio.recon_params(d, body.get("recon")))
+                return self._send(200, {"ok": True, "job": job.id})
+            if path == "/api/reconstruct-video":
+                # No upload: this is a local desktop tool the browser UI just
+                # remote-controls (see the module docstring's "no
+                # authentication" note) - a path on this machine is exactly
+                # as trusted as the phone-capture and subprocess control the
+                # rest of this API already has.
+                # Windows Explorer's "Copy as path" wraps the path in quotes,
+                # so strip them rather than looking for a file whose name
+                # starts with a double quote.
+                raw = (body.get("path") or "").strip().strip('"').strip("'").strip()
+                p = os.path.abspath(raw) if raw else ""
+                if not p or not os.path.isfile(p):
+                    return self._send(404, {"ok": False, "error": "no such file: %s" % (p or raw)})
+                job = studio.queue.submit_video(p, _merge(studio.settings["recon"], body.get("recon") or {}))
                 return self._send(200, {"ok": True, "job": job.id})
             m = re.match(r"^/api/jobs/(\d+)/cancel$", path)
             if m:
                 return self._send(200, {"ok": studio.queue.cancel(int(m.group(1)))})
+            m = re.match(r"^/api/jobs/(\d+)/delete$", path)
+            if m:
+                ok, err = studio.queue.delete(int(m.group(1)))
+                return self._send(200 if ok else 409, {"ok": ok, "error": err})
+            m = re.match(r"^/api/sessions/([\w.-]+)/recons/([\w.-]+)/delete$", path)
+            if m:
+                ok, err = studio.delete_recon(m.group(1), m.group(2))
+                return self._send(200 if ok else 409, {"ok": ok, "error": err})
+            m = re.match(r"^/api/video-jobs/([\w.-]+)/delete$", path)
+            if m:
+                ok, err = studio.delete_video_job(m.group(1))
+                return self._send(200 if ok else 409, {"ok": ok, "error": err})
             return self._send(404, {"error": "not found"})
 
     return Handler
@@ -351,17 +544,24 @@ def main():
     ap.add_argument("--phone-host", default="0.0.0.0")
     ap.add_argument("--phone-port", type=int, default=5555, help="port the app connects to")
     ap.add_argument("--data-root", default=DEFAULT_DATA_ROOT,
-                    help="sessions are written to <data-root>/sessions/<id>/")
+                    help="sessions are written to <data-root>/sessions/<id>/, video-file jobs to "
+                         "<data-root>/video_jobs/<name>-<n>/")
+    ap.add_argument("--recon-viz-port", type=int, default=8767,
+                    help="port for each reconstruction's live viewer (--live-viz) - always the same "
+                         "port since jobs.py runs one reconstruction at a time")
     ap.add_argument("--open", action="store_true", help="open the page in a browser")
     args = ap.parse_args()
 
-    studio = Studio(args.data_root, args.phone_host, args.phone_port)
+    studio = Studio(args.data_root, args.phone_host, args.phone_port, viz_port=args.recon_viz_port)
     httpd = ThreadingHTTPServer((args.web_host, args.port), make_handler(studio))
     httpd.daemon_threads = True
     url = "http://%s:%d" % ("127.0.0.1" if args.web_host in ("0.0.0.0", "") else args.web_host, args.port)
     print("RTVIO Studio: %s" % url)
     print("phone: set Server IP to one of %s, port %d" % (", ".join(studio.lan) or "<this PC's LAN IP>",
                                                           args.phone_port))
+    drone_ip = studio.settings["drone"].get("ip")
+    print("drone: %s" % ("%s (MAVLink :%s + video)" % (drone_ip, studio.settings["drone"].get("mavlink_port"))
+                         if drone_ip else "set its IP in the page's Drone connection card"))
     print("sessions: %s" % studio.sessions_root, flush=True)
     if args.open:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()

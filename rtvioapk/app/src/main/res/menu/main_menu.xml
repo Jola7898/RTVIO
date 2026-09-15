@@ -6,6 +6,10 @@
         android:title="@string/menu_specs"
         app:showAsAction="never" />
     <item
+        android:id="@+id/menu_recordings"
+        android:title="@string/menu_recordings"
+        app:showAsAction="never" />
+    <item
         android:id="@+id/menu_settings"
         android:title="@string/menu_settings"
         app:showAsAction="never" />

@@ -340,6 +340,13 @@ class PhoneLink:
                     self._on_intrinsics(protocol.read_intrinsics(conn))
                 elif header == protocol.HEADER_STATUS:
                     self._on_status(protocol.read_status(conn))
+                elif header == protocol.HEADER_SESSION_BEGIN:
+                    # One-shot bulk copy (Saved sessions -> Transfer), never
+                    # mixed with live streaming - handle it and stop, rather
+                    # than looping back to read another FRAME/IMU/... header
+                    # that will never come on this connection.
+                    self._receive_session_transfer(conn)
+                    return
                 else:
                     raise protocol.StreamClosed("unknown packet header 0x%02X" % header)
         except (protocol.StreamClosed, OSError) as e:
@@ -356,6 +363,100 @@ class PhoneLink:
                         if self.active.origin == "legacy":
                             self._finalize(self.active, "legacy stream ended")
             self._close(conn)
+
+    def _receive_session_transfer(self, conn):
+        """One HEADER_SESSION_BEGIN...HEADER_SESSION_END bulk copy: the
+        app's Saved sessions -> Transfer action, RECORD LOCALLY's
+        counterpart to a live stream. Writes to self.root/<session id>/,
+        preserving the relative paths the phone sent - exactly
+        frames/NNNNNN.jpg plus the *.json sidecars
+        _load_recording_frames/load_gps_track_from_recording already read,
+        so the result is immediately usable with --from-recording and shows
+        up in Studio's session list the same as a live-recorded take. Same
+        wire format rtvioapk/tools/mock_receiver.py --sessions-dir already
+        validates end-to-end against the app.
+
+        Raising protocol.StreamClosed here is caught by _serve's own
+        try/except exactly like a malformed live-stream packet would be -
+        no separate error handling needed."""
+        session_id, file_count, total_bytes = protocol.read_session_begin(conn)
+        dest_root = os.path.join(self.root, session_id)
+        os.makedirs(dest_root, exist_ok=True)
+        self._event("receiving transferred session '%s': %d files, %.1f MB"
+                    % (session_id, file_count, total_bytes / 1e6))
+
+        for _ in range(file_count):
+            header = protocol.recv_exact(conn, 1)[0]
+            if header != protocol.HEADER_SESSION_FILE:
+                raise protocol.StreamClosed("expected a session file header, got 0x%02X" % header)
+            rel_path, file_size = protocol.read_session_file_header(conn)
+            # rel_path always uses '/' (the phone is Android); os.path.join
+            # with a POSIX-style relative path still resolves on Windows.
+            dest_path = os.path.join(dest_root, *rel_path.split("/"))
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            with open(dest_path, "wb") as f:
+                remaining = file_size
+                while remaining:
+                    chunk = conn.recv(min(remaining, 1 << 20))
+                    if not chunk:
+                        raise protocol.StreamClosed("peer closed mid-file (%s)" % rel_path)
+                    f.write(chunk)
+                    remaining -= len(chunk)
+
+        end_header = protocol.recv_exact(conn, 1)[0]
+        if end_header != protocol.HEADER_SESSION_END:
+            raise protocol.StreamClosed("expected the transfer-end marker, got 0x%02X" % end_header)
+
+        self._event("session '%s' transferred: %d files, %.1f MB -> %s"
+                    % (session_id, file_count, total_bytes / 1e6, dest_root))
+        meta = self._normalize_transferred_meta(dest_root, session_id, file_count, total_bytes)
+        self.last_finalized = meta
+        if self.on_session_finalized is not None:
+            threading.Thread(target=self.on_session_finalized, args=(dest_root, meta),
+                             daemon=True).start()
+
+    @staticmethod
+    def _normalize_transferred_meta(dest_root, session_id, file_count, total_bytes):
+        """LocalSessionRecorder.kt writes its own session_meta.json in a
+        different shape (frames_written/total_time_s/fps - see its
+        finish()) than SessionWriter.finalize's live-recording one
+        (frames_received/duration_s/fps_mean) below. Studio's UI
+        (renderPhone/renderSessions in app.js) and list_sessions() only
+        understand the latter - reshaping once here, rather than teaching
+        every reader both shapes, is what keeps a transferred session's
+        card from throwing on a field name that isn't there (which used to
+        take the WHOLE session list down with it, not just that card)."""
+        raw = None
+        try:
+            with open(os.path.join(dest_root, "session_meta.json")) as f:
+                raw = json.load(f)
+        except (OSError, ValueError):
+            pass    # the app always writes one, but don't block the transfer on it
+        raw = raw or {}
+        frames = raw.get("frames_written")
+        meta = {
+            "id": session_id, "origin": "transferred", "reason": "record locally -> transfer",
+            "created": time.strftime("%Y-%m-%d %H:%M:%S"), "params": {},
+            "frames_received": frames if frames is not None else file_count,
+            "frames_reported_sent": frames,
+            "complete": True,
+            "frames_captured_by_phone": frames,
+            "frames_skipped_by_camera": raw.get("frames_dropped"),
+            "resolution": None,
+            "duration_s": round(raw.get("total_time_s") or 0.0, 3),
+            "fps_median": None,
+            "fps_mean": round(raw.get("fps") or 0.0, 2),
+            "frame_gaps": raw.get("frames_dropped", 0),
+            "non_monotonic_timestamps": None,
+            "bytes": total_bytes,
+            "imu_samples": raw.get("imu_samples", 0),
+            "gps_fixes": raw.get("gps_fixes", 0),
+            "boot_to_wall_s": raw.get("started_at_wall_ms"),
+            "phone": {},
+        }
+        with open(os.path.join(dest_root, "session_meta.json"), "w") as f:
+            json.dump(meta, f)
+        return meta
 
     def _watchdog(self):
         while True:

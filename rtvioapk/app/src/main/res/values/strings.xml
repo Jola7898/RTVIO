@@ -29,6 +29,28 @@
     <string name="menu_specs">Device specs</string>
     <string name="menu_settings">Settings</string>
     <string name="menu_share">Share specs</string>
+    <string name="menu_recordings">Saved sessions</string>
+
+    <!-- Local (offline) recording -->
+    <string name="action_record_local">RECORD LOCALLY</string>
+    <string name="action_stop_record_local">■ STOP RECORDING</string>
+    <string name="mode_local_recording">Recording locally: %1$s</string>
+    <string name="no_receiver_hint">No receiver found at %1$s — recording locally only</string>
+    <string name="local_summary_title">Saved to phone storage</string>
+    <string name="local_summary_hint">Saved as \"%1$s\". Open Saved sessions to transfer it once you\'re back near the desktop.</string>
+    <string name="title_recordings">Saved sessions</string>
+    <string name="recordings_empty">No local recordings yet. Use RECORD LOCALLY on the main screen.</string>
+    <string name="recordings_no_receiver">No receiver found at %1$s:%2$d. Connect to the same WiFi as the desktop, set Server IP in Settings, then try again.</string>
+    <string name="recordings_transfer">Transfer</string>
+    <string name="recordings_delete">Delete</string>
+    <string name="recordings_delete_title">Delete this session?</string>
+    <string name="recordings_delete_message">This permanently deletes %1$d frames from phone storage. This cannot be undone.</string>
+    <string name="recordings_transferring">Sending %1$s…</string>
+    <string name="recordings_transfer_done">Sent \"%1$s\" to %2$s</string>
+    <string name="recordings_transfer_failed">Transfer failed: %1$s</string>
+    <string name="recordings_delete_after_transfer_title">Delete from phone?</string>
+    <string name="recordings_delete_after_transfer_message">\"%1$s\" was sent successfully. Delete the copy on this phone to free up space?</string>
+    <string name="keep">Keep</string>
 
     <!-- Status panel -->
     <string name="status_panel_title">Status</string>

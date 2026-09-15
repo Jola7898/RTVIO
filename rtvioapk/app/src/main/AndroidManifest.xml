@@ -61,6 +61,12 @@
             android:label="@string/title_specs"
             android:parentActivityName=".ui.MainActivity" />
 
+        <activity
+            android:name=".ui.RecordingsActivity"
+            android:exported="false"
+            android:label="@string/title_recordings"
+            android:parentActivityName=".ui.MainActivity" />
+
         <service
             android:name=".service.StreamingForegroundService"
             android:exported="false"

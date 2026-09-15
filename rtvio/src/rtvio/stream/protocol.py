@@ -28,6 +28,16 @@ HEADER_PREVIEW = 0xFA          # phone -> desktop, same layout as FRAME; a
                                # never recorded (protocol v2 only)
 HEADER_COMMAND = 0xC0          # desktop -> phone, JSON (protocol v2 only)
 HEADER_HANDSHAKE_ACK = 0xAA
+# phone -> desktop, one-shot bulk copy of a RECORD LOCALLY session (the app's
+# Saved sessions -> Transfer action), its own dedicated connection, never
+# mixed with live streaming. Canonical definition is Protocol.kt; wire format
+# matches rtvioapk/tools/mock_receiver.py's receive_session_transfer exactly:
+# SESSION_BEGIN (pstring id, i32 file_count, i64 total_bytes), then
+# file_count x SESSION_FILE (pstring rel_path, i64 size, raw bytes), then
+# SESSION_END.
+HEADER_SESSION_BEGIN = 0xE0
+HEADER_SESSION_FILE = 0xE1
+HEADER_SESSION_END = 0xE2
 
 # v1: the phone streams as soon as it connects and never reads another byte
 # after the handshake. v2 (rtvio.studio): the phone connects "armed", streams
@@ -141,6 +151,13 @@ def recv_exact(sock, count):
     return b"".join(chunks)
 
 
+def read_pstring(sock):
+    """u16 length + utf-8 bytes, the framing every string field on the wire
+    uses (session id, file relative paths)."""
+    (n,) = struct.unpack(">H", recv_exact(sock, 2))
+    return recv_exact(sock, n).decode("utf-8") if n else ""
+
+
 def encode_handshake(version=PROTOCOL_VERSION):
     """Desktop -> phone greeting. A v1 app reads exactly these 6 bytes and
     never expects another inbound byte. Only send version=2 from a receiver
@@ -250,6 +267,24 @@ def read_intrinsics(sock):
         k3=distortion[4],
         source=source
     )
+
+
+def read_session_begin(sock):
+    """Body of a SESSION_BEGIN packet whose header byte was already
+    consumed: (session_id, file_count, total_bytes)."""
+    session_id = read_pstring(sock)
+    file_count, total_bytes = struct.unpack(">iq", recv_exact(sock, 12))
+    return session_id, file_count, total_bytes
+
+
+def read_session_file_header(sock):
+    """Body of a SESSION_FILE packet whose header byte was already
+    consumed: (relative_path, file_size) - the raw file bytes follow and
+    are the caller's to read (recv_exact would buffer a large video/frame
+    dump entirely in memory; the caller streams it to disk instead)."""
+    rel_path = read_pstring(sock)
+    (file_size,) = struct.unpack(">q", recv_exact(sock, 8))
+    return rel_path, file_size
 
 
 def read_packet(sock):

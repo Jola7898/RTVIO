@@ -10,6 +10,13 @@ can either dump frames to disk or show them in a live window.
     python mock_receiver.py --view                # live video window (needs opencv)
     python mock_receiver.py --save-frames out/    # also write JPEGs
     python mock_receiver.py --advertise           # announce over mDNS
+    python mock_receiver.py --sessions-dir out/   # accept "Transfer" from the app's Saved sessions screen
+
+A phone recorded fully offline (RECORD LOCALLY, for when there is no WiFi
+route to this machine at capture time) sends its session directory over on
+its own connection when you use the app's Saved sessions -> Transfer action;
+this receiver writes it back out under --sessions-dir/<session id>/, in the
+exact layout `rtvio.vggt_reconstruct --from-recording` reads directly.
 
 One correctness note, because it is the single most common bug when writing a
 receiver from the spec: **sock.recv(n) may return fewer than n bytes.** It is a
@@ -34,6 +41,9 @@ HEADER_IMU = 0xFE
 HEADER_GPS = 0xFD
 HEADER_INTRINSICS = 0xFC
 HEADER_HANDSHAKE_ACK = 0xAA
+HEADER_SESSION_BEGIN = 0xE0
+HEADER_SESSION_FILE = 0xE1
+HEADER_SESSION_END = 0xE2
 
 PROTOCOL_VERSION = 1
 STATUS_OK = 0
@@ -223,14 +233,82 @@ def read_intrinsics(sock, stats):
     return stats.camera_intrinsics
 
 
-def serve_client(conn, addr, save_dir, stats, sink=None, quiet=False):
+def read_pstring(sock):
+    """u16 length + utf-8 bytes, the framing every string field on the wire uses."""
+    (n,) = struct.unpack(">H", recv_exact(sock, 2))
+    return recv_exact(sock, n).decode("utf-8") if n else ""
+
+
+def receive_session_transfer(conn, sessions_dir):
+    """Reads one HEADER_SESSION_BEGIN...HEADER_SESSION_END transfer (header
+    byte already consumed) and writes it to sessions_dir/<session id>/,
+    preserving the relative paths the phone sent - which are exactly
+    frames/NNNNNN.jpg + the *.json sidecars `_load_recording_frames` and
+    `load_gps_track_from_recording` already know how to read."""
+    session_id = read_pstring(conn)
+    file_count, total_bytes = struct.unpack(">iq", recv_exact(conn, 12))
+    dest_root = os.path.join(sessions_dir, session_id)
+    os.makedirs(dest_root, exist_ok=True)
+    print(f"\nReceiving session '{session_id}': {file_count} files, "
+          f"{total_bytes / 1e6:.1f} MB -> {dest_root}")
+
+    received_bytes = 0
+    for _ in range(file_count):
+        header = recv_exact(conn, 1)[0]
+        if header != HEADER_SESSION_FILE:
+            raise StreamClosed(f"expected a file header, got 0x{header:02X}")
+        rel_path = read_pstring(conn)
+        (file_size,) = struct.unpack(">q", recv_exact(conn, 8))
+        # rel_path always uses '/' (the phone is Android); os.path.join with
+        # a POSIX-style relative path still resolves correctly on Windows.
+        dest_path = os.path.join(dest_root, *rel_path.split("/"))
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        with open(dest_path, "wb") as f:
+            remaining = file_size
+            while remaining:
+                chunk = conn.recv(min(remaining, 1 << 20))
+                if not chunk:
+                    raise StreamClosed(f"peer closed mid-file ({rel_path})")
+                f.write(chunk)
+                remaining -= len(chunk)
+        received_bytes += file_size
+        print(f"  {rel_path}  ({file_size / 1024:.0f} KB)  "
+              f"[{received_bytes / 1e6:.1f}/{total_bytes / 1e6:.1f} MB]")
+
+    end_header = recv_exact(conn, 1)[0]
+    if end_header != HEADER_SESSION_END:
+        raise StreamClosed(f"expected the transfer-end marker, got 0x{end_header:02X}")
+
+    print(f"Session '{session_id}' received completely -> {dest_root}")
+    print("  reconstruct with:")
+    print(f"    python -m rtvio.vggt_reconstruct --from-recording {dest_root} "
+          f"--out data/outputs/{session_id}")
+
+
+def serve_client(conn, addr, save_dir, stats, sink=None, quiet=False, sessions_dir=None):
     print(f"\nClient connected: {addr[0]}:{addr[1]}")
     send_handshake(conn)
+
+    # A session transfer is a one-shot bulk copy, never mixed with live
+    # streaming, so it gets its own branch entirely - the per-frame stats
+    # loop and its "Session: N s / 0 frames" summary would only be noise here.
+    try:
+        header = recv_exact(conn, 1)[0]
+    except StreamClosed:
+        conn.close()
+        return
+    if header == HEADER_SESSION_BEGIN:
+        try:
+            receive_session_transfer(conn, sessions_dir or "received_sessions")
+        except StreamClosed as e:
+            print(f"Transfer from {addr[0]} failed: {e}")
+        finally:
+            conn.close()
+        return
+
     stats.connected = True
-    intrinsics_out_path = None
     try:
         while True:
-            header = recv_exact(conn, 1)[0]
             if header == HEADER_FRAME:
                 read_frame(conn, stats, save_dir, sink)
             elif header == HEADER_IMU:
@@ -242,6 +320,7 @@ def serve_client(conn, addr, save_dir, stats, sink=None, quiet=False):
             else:
                 raise StreamClosed(f"unknown packet header 0x{header:02X}")
             stats.tick(quiet=quiet)
+            header = recv_exact(conn, 1)[0]
     except StreamClosed as e:
         print(f"Client {addr[0]} disconnected: {e}")
     except (ConnectionResetError, OSError) as e:
@@ -515,14 +594,14 @@ def advertise(port):
     return zc, info
 
 
-def accept_loop(server, save_dir, stats, sink, quiet):
+def accept_loop(server, save_dir, stats, sink, quiet, sessions_dir):
     while True:
         try:
             conn, addr = server.accept()
         except OSError:
             return
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        serve_client(conn, addr, save_dir, stats, sink, quiet)
+        serve_client(conn, addr, save_dir, stats, sink, quiet, sessions_dir)
 
 
 def main():
@@ -536,6 +615,9 @@ def main():
                         help="show the live video in a window (requires opencv-python)")
     parser.add_argument("--advertise", action="store_true",
                         help="announce this receiver over mDNS")
+    parser.add_argument("--sessions-dir", default="received_sessions", metavar="DIR",
+                        help="where a phone's Saved sessions -> Transfer lands "
+                             "(default: ./received_sessions)")
     args = parser.parse_args()
 
     if args.view:
@@ -547,6 +629,7 @@ def main():
 
     if args.save_frames:
         os.makedirs(args.save_frames, exist_ok=True)
+    os.makedirs(args.sessions_dir, exist_ok=True)
 
     zc = advertise(args.port) if args.advertise else None
 
@@ -564,13 +647,13 @@ def main():
             # Networking moves to a worker; the GUI keeps the main thread.
             t = threading.Thread(
                 target=accept_loop,
-                args=(server, args.save_frames, stats, sink, True),
+                args=(server, args.save_frames, stats, sink, True, args.sessions_dir),
                 daemon=True,
             )
             t.start()
             run_viewer(stats, sink)
         else:
-            accept_loop(server, args.save_frames, stats, sink, False)
+            accept_loop(server, args.save_frames, stats, sink, False, args.sessions_dir)
     except KeyboardInterrupt:
         print("\nShutting down.")
     finally:

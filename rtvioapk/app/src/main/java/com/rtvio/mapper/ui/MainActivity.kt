@@ -21,10 +21,12 @@ import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.snackbar.Snackbar
 import com.rtvio.mapper.R
+import com.rtvio.mapper.capture.LocalSessionRecorder
 import com.rtvio.mapper.data.DeviceSpecsCollector
 import com.rtvio.mapper.data.SettingsManager
 import com.rtvio.mapper.databinding.ActivityMainBinding
 import com.rtvio.mapper.net.ConnectionState
+import com.rtvio.mapper.net.ReceiverProbe
 import com.rtvio.mapper.net.StreamStats
 import com.rtvio.mapper.service.LinkState
 import com.rtvio.mapper.service.StreamingForegroundService
@@ -59,11 +61,19 @@ class MainActivity : AppCompatActivity() {
     /** Set when the user taps CONNECT before the permission dialog resolves. */
     private var startAfterPermission = false
 
+    /** Same idea as [startAfterPermission], for the RECORD LOCALLY button. */
+    private var localRecordAfterPermission = false
+
+    /** Last reachability result for Settings -> Server IP; null = not checked yet. */
+    private var receiverReachable: Boolean? = null
+    private val RECEIVER_POLL_MS = 5_000L
+
     private val permissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { granted ->
         if (granted[Manifest.permission.CAMERA] == false) {
             startAfterPermission = false
+            localRecordAfterPermission = false
             showCameraDenied()
             return@registerForActivityResult
         }
@@ -71,6 +81,10 @@ class MainActivity : AppCompatActivity() {
         if (startAfterPermission) {
             startAfterPermission = false
             connect()
+        }
+        if (localRecordAfterPermission) {
+            localRecordAfterPermission = false
+            startLocalRecording()
         }
     }
 
@@ -92,12 +106,16 @@ class MainActivity : AppCompatActivity() {
                 R.id.menu_settings -> {
                     startActivity(Intent(this, SettingsActivity::class.java)); true
                 }
+                R.id.menu_recordings -> {
+                    startActivity(Intent(this, RecordingsActivity::class.java)); true
+                }
                 else -> false
             }
         }
 
         labelRows()
         binding.btnStream.setOnClickListener { onConnectButton() }
+        binding.btnRecordLocal.setOnClickListener { onRecordLocalButton() }
         binding.btnRecord.setOnClickListener {
             it.performHapticFeedbackIfEnabled()
             session.toggleRecording()
@@ -111,7 +129,14 @@ class MainActivity : AppCompatActivity() {
         // service, which has no handle on the camera or the socket; this is
         // what turns either of those into a real teardown.
         StreamingForegroundService.onStopRequested = {
-            runOnUiThread { if (session.isStreaming) endSession() }
+            runOnUiThread {
+                if (session.isStreaming) endSession()
+                else if (session.isLocalRecording) {
+                    val summary = session.stopLocalRecording()
+                    renderIdleState()
+                    summary?.let { showLocalSummary(it) }
+                }
+            }
         }
 
         observeSession()
@@ -163,21 +188,22 @@ class MainActivity : AppCompatActivity() {
         // Rebinding here picks up any resolution or frame-rate change made in
         // Settings, but never mid-session: rebinding would drop frames. Quality
         // is the one setting that can be retuned without a rebind.
-        if (session.isStreaming) session.applyQuality() else bindPreviewIfPermitted()
+        if (session.isCapturing) session.applyQuality() else bindPreviewIfPermitted()
         applyOverlayVisibility()
         renderIdleState()
     }
 
     override fun onPause() {
         super.onPause()
-        // A connected session keeps the camera; the foreground service is what
-        // makes that legal and survivable.
-        if (!session.isStreaming) session.stopPreview()
+        // A connected or locally-recording session keeps the camera; the
+        // foreground service is what makes that legal and survivable.
+        if (!session.isCapturing) session.stopPreview()
     }
 
     override fun onDestroy() {
         StreamingForegroundService.onStopRequested = null
         if (session.isStreaming) session.stop()
+        if (session.isLocalRecording) session.stopLocalRecording()
         session.stopPreview()
         super.onDestroy()
     }
@@ -243,6 +269,59 @@ class MainActivity : AppCompatActivity() {
         showSummary(summary)
     }
 
+    // ----------------------------------------------------- local recording
+
+    private fun onRecordLocalButton() {
+        binding.btnRecordLocal.performHapticFeedbackIfEnabled()
+        if (session.isLocalRecording) {
+            val summary = session.stopLocalRecording()
+            renderIdleState()
+            summary?.let { showLocalSummary(it) }
+            return
+        }
+        if (!has(Manifest.permission.CAMERA)) {
+            localRecordAfterPermission = true
+            permissionLauncher.launch(arrayOf(Manifest.permission.CAMERA))
+            return
+        }
+        if (settings.outdoorMode && !has(Manifest.permission.ACCESS_FINE_LOCATION)) {
+            MaterialAlertDialogBuilder(this)
+                .setMessage(R.string.perm_location_rationale)
+                .setPositiveButton(R.string.perm_grant) { _, _ ->
+                    localRecordAfterPermission = true
+                    permissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION))
+                }
+                .setNegativeButton(R.string.cancel) { _, _ -> startLocalRecording() }
+                .show()
+            return
+        }
+        startLocalRecording()
+    }
+
+    private fun startLocalRecording() {
+        val error = session.startLocalRecording(this, binding.previewView)
+        if (error != null) Snackbar.make(binding.root, error, Snackbar.LENGTH_LONG).show()
+        renderState()
+    }
+
+    private fun showLocalSummary(s: LocalSessionRecorder.Summary) {
+        val text = buildString {
+            appendLine("Duration: %s".format(formatDuration(s.durationMs)))
+            appendLine("Frames saved: %,d".format(s.frames))
+            if (s.framesDropped > 0) appendLine("Frames dropped: %,d".format(s.framesDropped))
+            appendLine("IMU samples: %,d".format(s.imuSamples))
+            appendLine("GPS fixes: %,d".format(s.gpsFixes))
+            appendLine("Size on phone: %.1f MB".format(s.bytesWritten / 1e6))
+            appendLine()
+            append(getString(R.string.local_summary_hint, s.sessionId))
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.local_summary_title)
+            .setMessage(text.trim())
+            .setPositiveButton(R.string.ok, null)
+            .show()
+    }
+
     private fun showSummary(s: StreamingSession.Summary) {
         val seconds = s.durationMs / 1000.0
         val text = buildString {
@@ -292,7 +371,9 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
                 launch { session.state.collectLatest { renderState() } }
+                launch { session.localRecording.collectLatest { renderState() } }
                 launch { session.client.stats.collectLatest { renderStats(it) } }
+                launch { pollReceiverReachability() }
                 launch {
                     session.events.collectLatest {
                         Snackbar.make(binding.root, it, Snackbar.LENGTH_LONG).show()
@@ -315,7 +396,13 @@ class MainActivity : AppCompatActivity() {
     private fun renderState() {
         val state = session.state.value
         val conn = session.client.connection.value
+        val localRec = session.isLocalRecording
 
+        // Recording locally owns the camera exclusively - streaming is not an
+        // option until it stops, so the button is hidden rather than merely
+        // disabled (a disabled CONNECT with no explanation reads as a bug).
+        binding.btnStream.visibility = if (localRec) View.GONE else View.VISIBLE
+        binding.btnStream.isEnabled = state != LinkState.OFF || receiverReachable != false
         binding.btnStream.setText(
             when (state) {
                 LinkState.OFF -> R.string.action_connect
@@ -330,6 +417,23 @@ class MainActivity : AppCompatActivity() {
                 LinkState.STREAMING -> ContextCompat.getColor(this, R.color.stop_red)
                 else -> MaterialColors.getColor(binding.btnStream, com.google.android.material.R.attr.colorSecondary)
             }
+        )
+
+        // RECORD LOCALLY only makes sense while the network link is idle: a
+        // remote (RTVIO Studio) take already has its own REC button below.
+        binding.btnRecordLocal.visibility = if (state == LinkState.OFF) View.VISIBLE else View.GONE
+        binding.btnRecordLocal.text =
+            getString(if (localRec) R.string.action_stop_record_local else R.string.action_record_local)
+        binding.btnRecordLocal.backgroundTintList = ColorStateList.valueOf(
+            if (localRec) ContextCompat.getColor(this, R.color.stop_red)
+            else MaterialColors.getColor(binding.btnRecordLocal, com.google.android.material.R.attr.colorSecondary)
+        )
+
+        binding.tvReceiverHint.visibility =
+            if (state == LinkState.OFF && !localRec && receiverReachable == false) View.VISIBLE else View.GONE
+        binding.tvReceiverHint.text = getString(
+            R.string.no_receiver_hint,
+            settings.serverIp.ifEmpty { getString(R.string.no_server_set) }
         )
 
         val remote = state == LinkState.ARMED || state == LinkState.RECORDING || state == LinkState.FINISHING
@@ -355,10 +459,30 @@ class MainActivity : AppCompatActivity() {
 
         // A timeout blanking the screen would stop CameraX (it is bound to
         // this activity's lifecycle) in the middle of a take.
-        if (state != LinkState.OFF) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        if (state != LinkState.OFF || localRec) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         updateRecOverlay()
         updateModeRow()
+    }
+
+    /**
+     * Whether Settings -> Server IP has a receiver listening decides which
+     * buttons the idle screen offers: STREAM only makes sense if one is
+     * there, RECORD LOCALLY always does. Only polled while genuinely idle -
+     * a live connection already knows its own state.
+     */
+    private suspend fun pollReceiverReachability() {
+        while (currentCoroutineContext().isActive) {
+            if (session.state.value == LinkState.OFF && !session.isLocalRecording) checkReceiverOnce()
+            delay(RECEIVER_POLL_MS)
+        }
+    }
+
+    private suspend fun checkReceiverOnce() {
+        val host = settings.serverIp
+        receiverReachable = if (host.isEmpty()) false
+                             else ReceiverProbe.isReachable(host, settings.serverPort, 1200)
+        renderState()
     }
 
     private suspend fun pollFastState() {
@@ -371,7 +495,11 @@ class MainActivity : AppCompatActivity() {
             if (session.state.value == LinkState.FINISHING) {
                 binding.btnRecord.text = getString(R.string.action_uploading, session.recordingBacklog)
             }
-            if (session.isStreaming) {
+            if (session.isLocalRecording) {
+                StreamingForegroundService.update(
+                    this, "● REC (local) %s  |  %.0f fps".format(recElapsedLocal(), session.cameraFps)
+                )
+            } else if (session.isStreaming) {
                 StreamingForegroundService.update(
                     this,
                     when (session.state.value) {
@@ -391,8 +519,18 @@ class MainActivity : AppCompatActivity() {
         return if (start == 0L) "00:00" else formatDuration(System.currentTimeMillis() - start).substring(3)
     }
 
+    private fun recElapsedLocal(): String {
+        val start = session.localRecordingStartedAtMs
+        return if (start == 0L) "00:00" else formatDuration(System.currentTimeMillis() - start).substring(3)
+    }
+
     private fun updateRecOverlay() {
         val o = binding.overlayRec
+        if (session.isLocalRecording) {
+            o.text = "● REC (local) %s  ·  %,d".format(recElapsedLocal(), session.framesCaptured)
+            o.visibility = View.VISIBLE
+            return
+        }
         when (session.state.value) {
             LinkState.RECORDING -> {
                 val backlog = session.recordingBacklog
@@ -431,7 +569,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateModeRow() {
-        val text = when (session.state.value) {
+        val text = if (session.isLocalRecording) {
+            getString(R.string.mode_local_recording, session.localSessionId ?: "") + gpsPart()
+        } else when (session.state.value) {
             LinkState.ARMED -> getString(R.string.mode_remote_armed)
             LinkState.RECORDING -> getString(R.string.mode_remote_recording, session.sessionId ?: "")
             LinkState.FINISHING -> getString(R.string.mode_remote_finishing, session.recordingBacklog)
@@ -446,7 +586,7 @@ class MainActivity : AppCompatActivity() {
         !settings.outdoorMode -> ""
         !session.gps.isProviderEnabled -> " (GPS off)"
         session.gps.hasFix -> " (%.0f m)".format(session.gps.lastAccuracyM)
-        session.isStreaming -> " (no fix)"
+        session.isCapturing -> " (no fix)"
         else -> ""
     }
 

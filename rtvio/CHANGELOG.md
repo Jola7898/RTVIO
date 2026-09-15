@@ -2,6 +2,159 @@
 
 ## Unreleased
 
+### Drone camera lens calibration: frames undistorted before VGGT
+The drone's camera has a fisheye lens: straight walls and ceiling edges
+visibly bow in its frames. VGGT models a pinhole camera, so it settled on a
+compromise field of view, and the reconstruction's right angles opened up.
+On the first real 184 s indoor take it estimated fx 272 px at 518 px wide,
+about 87° across, and a wall corner came out near 150°. The drone reports no
+camera parameters. That take's telemetry carried none, and the camera sits
+on the companion computer, not the flight controller.
+
+- `camera_model.py` handles lens profiles (fisheye Kannala-Brandt or pinhole
+  Brown-Conrady):
+  - the real edge-to-edge field of view
+  - checkerboard calibration: both models are fitted and the lower
+    reprojection error wins
+  - remap tables to an ideal pinhole camera
+- Studio, Drone tab → **Camera calibration**:
+  - Checkerboard views are captured from the live video. A view is kept
+    only when the board is somewhere new. A 3×3 grid shows coverage; at
+    least 10 views are needed, and capture stops at 25.
+  - **Calibrate** saves the result to `data/drone_camera.json`. The views
+    are kept under `data/drone_calib/<time>/`.
+  - "Show undistorted" previews what VGGT will see.
+- Every drone take now writes `camera_intrinsics.json`: the calibration,
+  scaled to the recorded size.
+- `vggt_reconstruct` remaps every frame to a pinhole before VGGT when the
+  take's calibration has distortion. A take recorded before calibration is
+  handed the current calibration by the Studio (`--intrinsics`).
+- New flags: `--intrinsics`, `--no-undistort`, `--undistort-balance`.
+- Phone takes are unaffected, since their Camera2 intrinsics carry no size
+  or distortion.
+- `CHECKPOINT_REPORT.md` has a new **Camera** section. It puts VGGT's own
+  focal estimate next to the calibrated one, so a field-of-view mismatch
+  shows up in every report.
+- The drone is also asked over MAVLink for `CAMERA_INFORMATION` /
+  `VIDEO_STREAM_INFORMATION`. Anything it answers is shown and stored with
+  the take.
+- `tools/calibrate_camera.py --model fisheye|auto` calibrates offline from
+  saved views.
+- `tests/test_camera_model.py` renders checkerboards through a known ~135°
+  fisheye lens:
+  - calibration recovers fx within 0.1% and the field of view within 0.1°
+  - a straight edge the lens bows by 30 px comes out straight to 0.005 px
+  - it also covers the Studio's capture → calibrate → take path
+- Fixed along the way: `mavlink.encode` could not pack a message with an
+  unset string field, or with a field named `name`.
+- Not yet run against the real drone's camera, which needs a printed
+  checkerboard held in front of it.
+
+### Drone in RTVIO Studio: live video, telemetry, record -> reconstruct, Indoor/Outdoor
+The `idronam` branch's `capture-bridge` was a standalone Node tool that
+reached the drone the way the iDronam GCS does, worked out from iDronam's
+own bundled code: MAVLink v2 over TCP to `<ip>:14550`, and RTSP video from
+`rtsp://<ip>:10000/drone_cam`. It is now part of the Studio, ported to
+Python instead of running as a second server. `studio/drone_link.py`
+handles the connection and recording. `studio/mavlink.py` is a small codec
+whose message layouts and CRC bytes come from the bridge's generated
+`mavlink20.js`. So the Studio needs no Node runtime, no `ffmpeg.exe`
+(OpenCV's bundled FFmpeg reads the RTSP stream) and no `pymavlink`. The
+bridge's write-up is kept as `docs/IDRONAM_NOTES.md`.
+
+- New **Drone** tab next to **Phone**:
+  - live video
+  - telemetry: mode/armed, GPS, position, altitude, speed, attitude, battery
+  - Start / Stop recording
+  - a connection card: IP, port, video URL, recorded size, JPEG quality,
+    video delay
+- A drone take uses the phone's session layout: `frames/` +
+  `frame_timestamps.json` + `gps_data.json` + `session_meta.json`, plus
+  `drone_telemetry.json`. The session list, viewer and Reconstruct button
+  work on it unchanged. **Stopping a drone take always queues its
+  reconstruction immediately.**
+- **Indoor / Outdoor** switch, for the drone only and fixed per take:
+  - Outdoor records the drone's GPS (10 Hz, 3D fix only) and reconstructs
+    with `--gps-mode global`.
+  - Indoor records none and reconstructs vision-only.
+  - "Reconstruct again" on a drone take uses the mode it was flown in, not
+    the global GPS setting.
+- `tools/mock_drone.py` is a fake MAVLink drone for testing without the
+  aircraft. `tests/test_drone_link.py` runs the codec checks and a full
+  connect -> record -> finalize against it over a real socket.
+- `data/studio_settings.json` is now gitignored, since it holds the drone's IP.
+
+### Added `vggt_live.py`: VGGT reconstruction that starts while the flight is still streaming
+Previously the only way to get a VGGT reconstruction was `vggt_reconstruct.py`,
+which needs the complete recording (or video file) on disk before it starts -
+even against a live phone stream, that meant waiting for capture to finish,
+then waiting again for the whole thing to process. `vggt_live.py` is a new
+entry point that processes each window the moment enough new frames have
+arrived over the socket, instead of waiting for the recording to end first.
+
+This is not a new reconstruction algorithm: `vggt_reconstruct.py`'s per-window
+body (VGGT forward pass, robust-Sim3 seam alignment, voxel fusion) and its
+tail (fuse, georeference, mesh, export, report) were extracted verbatim into
+two shared functions, `_process_window` and `_finalize_and_write`, that both
+entry points now call - so a live run and a `--from-recording` run of the
+same footage produce the same geometry by construction, not by coincidence.
+Verified three ways: re-running an already-reconstructed session through the
+refactored batch path reproduced its `CHECKPOINT_REPORT.md` numbers (seam
+scales, georeferencing residual) to within normal GPU run-to-run
+floating-point variance; replaying that same session's frames over a real
+TCP socket into `vggt_live.py` did the same; and a real 101s outdoor phone
+session streamed straight into a finished, georeferenced reconstruction
+(579 frames, 11 windows) 141.1s after connecting.
+
+What it does not do: make VGGT faster. Measured throughput on a 16GB RTX
+5070 Ti is ~5-8 frames/s against a 24-30fps phone stream - slower than real
+time - so a live run's processing backlog still grows for as long as
+capture continues. The saving is structural: batch wall time is
+`capture_time + vggt_time` (processing cannot start until capture ends);
+live wall time is `max(capture_time, vggt_time)` plus one window's tail,
+because the two now overlap. Real whenever `vggt_time` is the larger stage
+(usually true), bounded by the shorter one - not a "processing is now 20%
+faster" claim, which the underlying GPU compute cost does not support. The
+same real run also quantified a cost not obvious on paper: window
+processing blocks the receiver for ~8-15s at a time, during which the
+app's bounded video queue drops most newly-captured frames (backpressure,
+by design) - that session delivered only ~5.7 fps versus the ~25 fps a
+RECORD LOCALLY session on the same phone gets. A real tradeoff, not a bug;
+documented in both READMEs so it's a choice, not a surprise.
+
+### Fixed `vggt_live.py` exiting on the app's own reachability check
+The Android app polls Settings -> Server IP every few seconds with a bare
+connect-then-immediately-disconnect probe (`ReceiverProbe`, used to decide
+whether to offer STREAM or only RECORD LOCALLY). `mock_receiver.py` loops
+forever accepting connections, so it shrugs this off; `vggt_live.py`'s
+`SocketPacketSource` accepts exactly one connection then stops listening -
+so the very first probe after the process started was consuming that one
+connection, and `rtvio.stream.source.StreamSession.run()` additionally
+raises `SystemExit` for a connection that carried zero frames and zero IMU
+samples (correct for `live_pipeline.py`, where that means a real flight
+attempt got nothing; wrong here, where it usually just means a probe) -
+between the two, the process exited before START STREAMING was ever tapped
+for real. `main()` now loops, treating both a `SystemExit` and a
+sub-2-frame connection as "that was a probe, keep listening" and only
+proceeding to the one real reconstruction once actual data arrives.
+Reproduced and verified fixed by sending two bare connect-and-close probes
+at a running receiver, confirming it kept listening, then replaying a real
+session's frames and confirming it still reconstructed correctly.
+
+### `--from-recording` now auto-detects georeferencing from the session's own GPS data
+`reconstruct_from_recording()` previously required an explicit
+`--gps-mode global` to georeference a recorded session, even when the
+session's `gps_data.json` already had real fixes in it - unlike `reconstruct()`
+(the `--video` path), which has auto-defaulted `gps_mode` to `"global"`
+whenever a `--gps` track is given since before this pipeline had a
+`--from-recording` mode at all. Whether a session has GPS at all is already
+a phone-side decision (Settings -> Outdoor mode on the Android app), so
+requiring a second, easy-to-forget desktop flag to act on data the phone
+already decided to record was redundant, not a safeguard. Fixed to mirror
+`reconstruct()`'s existing default: a non-empty GPS track now enables
+`gps_mode="global"` automatically; `--gps-mode off` still overrides it
+explicitly for anyone who wants the geometry without georeferencing.
+
 ### Removed the EKF/IMU-dead-reckoning trajectory
 `inertial_nav_ekf.py` (15-state ESKF: position/velocity/attitude/accel-bias/
 gyro-bias, GPS fusion, ZUPT, Mahalanobis-gated vision-pose fusion) and

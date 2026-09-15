@@ -151,3 +151,130 @@ def poisson_mesh(pts, normals, cols, depth=10, trim_dist=None, min_component_fac
     log("  after trim (%.4g) + component filter: %d vertices, %d faces"
         % (trim_dist if trim_dist is not None else float("nan"), len(verts), len(faces)))
     return verts, faces, vcols, vn, info
+
+
+def close_vertical_gaps(verts, faces, cols, min_gap_frac=0.08, min_component_frac=0.01,
+                        max_filled=4, log=print):
+    """Heuristic fix for the classic single-pass-aerial artifact: a roof (or
+    any surface only ever seen from directly above/at an angle) comes out of
+    poisson_mesh() as a component floating disconnected above the ground,
+    because the trim step there correctly deletes the unsupported "guess"
+    surface Poisson invents to bridge the two - there is no photo of the
+    wall in between, so no MVS/Poisson method can reconstruct it.
+
+    This walks the final mesh's connected components, treats the lowest one
+    (by median height) as ground, and for every other sizeable component
+    that sits over a real vertical gap above it, extrudes a vertical skirt
+    of triangles from the component's boundary loop(s) down to the local
+    ground height - closing the gap with a flat synthetic wall. This is NOT
+    real geometry (no wall was ever photographed - there's nothing to
+    texture it with beyond the roof/ground edge colours it's seeded from),
+    it just makes the mesh watertight instead of two floating shells.
+
+    Only fires on components that are >= min_component_frac of the mesh's
+    faces and show a gap >= min_gap_frac of the scene's diagonal extent, so
+    small debris (stray points, a lamppost) is left alone - though a real
+    tree canopy at building scale can still be mistaken for a roof and get
+    "walled in"; this is a heuristic, not building detection.
+    Returns (verts, faces, cols) with the skirts appended (unchanged if
+    nothing qualified)."""
+    nv = len(verts)
+    if len(faces) == 0 or nv == 0:
+        return verts, faces, cols
+    rows = np.concatenate([faces[:, 0], faces[:, 1], faces[:, 2]])
+    dst = np.concatenate([faces[:, 1], faces[:, 2], faces[:, 0]])
+    g = coo_matrix((np.ones(len(rows), dtype=np.int8), (rows, dst)), shape=(nv, nv))
+    n_comp, labels = connected_components(g, directed=False)
+    if n_comp < 2:
+        return verts, faces, cols
+
+    face_label = labels[faces[:, 0]]
+    comp_face_count = np.bincount(face_label, minlength=n_comp)
+    big = np.where(comp_face_count >= max(50, min_component_frac * len(faces)))[0]
+    if len(big) < 2:
+        return verts, faces, cols
+
+    comp_median_y = {int(c): float(np.median(verts[labels == c, 1])) for c in big}
+    ground_id = min(comp_median_y, key=comp_median_y.get)
+    ground_mask = labels == ground_id
+    ground_xy = verts[ground_mask][:, [0, 2]]
+    ground_y = verts[ground_mask][:, 1]
+    ground_tree = cKDTree(ground_xy)
+
+    extent = float(np.linalg.norm(verts.max(axis=0) - verts.min(axis=0)))
+    min_gap = min_gap_frac * extent
+
+    new_verts, new_faces, new_cols = [verts], [faces], [cols]
+    filled = 0
+    order = sorted((int(c) for c in big if c != ground_id), key=lambda c: -comp_face_count[c])
+    for comp in order:
+        if filled >= max_filled:
+            break
+        comp_faces = faces[face_label == comp]
+        comp_vidx = np.unique(comp_faces.reshape(-1))
+
+        d, nn = ground_tree.query(verts[comp_vidx][:, [0, 2]], k=1, workers=-1)
+        local_ground_y = float(np.median(ground_y[nn]))
+        if verts[comp_vidx, 1].min() - local_ground_y < min_gap:
+            continue  # already close to the ground - no real gap to fill
+
+        # Boundary directed edges: undirected edges used by exactly one face
+        # in this component. Their direction (as wound) chains into loops.
+        undirected_count, nxt = {}, {}
+        for a, b in ((0, 1), (1, 2), (2, 0)):
+            for uu, vv in zip(comp_faces[:, a].tolist(), comp_faces[:, b].tolist()):
+                key = (uu, vv) if uu < vv else (vv, uu)
+                undirected_count[key] = undirected_count.get(key, 0) + 1
+                nxt[(uu, vv)] = True
+        boundary_next = {}
+        for (uu, vv) in nxt:
+            key = (uu, vv) if uu < vv else (vv, uu)
+            if undirected_count[key] == 1:
+                boundary_next[uu] = vv
+        if not boundary_next:
+            continue
+
+        loops, visited = [], set()
+        for start in list(boundary_next):
+            if start in visited:
+                continue
+            loop, cur, steps = [start], boundary_next.get(start), 0
+            visited.add(start)
+            while cur is not None and cur != start and steps < len(boundary_next) + 1:
+                loop.append(cur)
+                visited.add(cur)
+                cur = boundary_next.get(cur)
+                steps += 1
+            if cur == start and len(loop) >= 3:
+                loops.append(loop)
+        if not loops:
+            continue
+
+        base_idx = sum(len(v) for v in new_verts)
+        for loop in loops:
+            loop_idx = np.array(loop)
+            top = verts[loop_idx]
+            _, nn2 = ground_tree.query(top[:, [0, 2]], k=1, workers=-1)
+            bot = top.copy()
+            bot[:, 1] = ground_y[nn2]
+            m = len(loop)
+            ring_top = np.arange(m) + base_idx
+            ring_bot = ring_top + m
+            skirt = []
+            for i in range(m):
+                j = (i + 1) % m
+                skirt.append((ring_top[i], ring_bot[i], ring_top[j]))
+                skirt.append((ring_top[j], ring_bot[i], ring_bot[j]))
+            new_verts += [top, bot]
+            new_faces.append(np.array(skirt, dtype=np.int32))
+            new_cols += [cols[loop_idx], cols[loop_idx]]
+            base_idx += 2 * m
+        filled += 1
+        log("  closed vertical gap: component %d (%d faces, gap %.3g) -> %d wall loop(s)"
+            % (comp, comp_face_count[comp], verts[comp_vidx, 1].min() - local_ground_y, len(loops)))
+
+    if filled == 0:
+        return verts, faces, cols
+    return (np.concatenate(new_verts, axis=0).astype(np.float32),
+            np.concatenate(new_faces, axis=0).astype(np.int32),
+            np.concatenate(new_cols, axis=0))

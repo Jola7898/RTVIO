@@ -19,3 +19,5 @@ build_log.txt
 # recorded phone-stream sessions (large binary captures, regenerate by running
 # tools/mock_receiver.py or the app against a live pipeline)
 session_out/
+received_sessions/
+tools/received_sessions/

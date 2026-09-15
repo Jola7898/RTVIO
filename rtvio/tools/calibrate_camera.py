@@ -64,6 +64,12 @@ def main():
     ap.add_argument("--no-distortion", action="store_true",
                      help="write only fx/fy/cx/cy (drop k1/k2/p1/p2/k3). Only do this if "
                           "something downstream can't yet handle the extra fields.")
+    ap.add_argument("--model", choices=["pinhole", "fisheye", "auto"], default="pinhole",
+                     help="lens model. pinhole (default): Brown-Conrady k1/k2/p1/p2/k3, fine for phones. "
+                          "fisheye: Kannala-Brandt k1-k4, for wide-angle/fisheye lenses such as the "
+                          "drone's. auto: fit both, keep the lower reprojection error. fisheye/auto write "
+                          "a camera_model profile (with \"model\"), which vggt_reconstruct undistorts "
+                          "frames with (--intrinsics)")
     args = ap.parse_args()
 
     board_size = (args.board_cols, args.board_rows)
@@ -117,6 +123,30 @@ def main():
     if used < 8:
         sys.exit("only %d usable images (need >= 8, more like 15-20 for a good fit "
                   "covering the frame including corners) - capture more views" % used)
+
+    if args.model != "pinhole":
+        from rtvio import camera_model
+        pts = [c.reshape(-1, 2) for c in imgpoints]
+        prof = (camera_model.calibrate_best(pts, board_size, image_size) if args.model == "auto"
+                else camera_model.calibrate(pts, board_size, image_size, "fisheye"))
+        prof["source"] = "tools/calibrate_camera.py, %d images" % used
+        s = camera_model.summary(prof)
+        print("\nmodel %s, RMS reprojection error %.3f px over %d views%s"
+              % (prof["model"], prof["rms_px"], prof["views"],
+                 " (alternatives: %s)" % prof["alternatives"] if "alternatives" in prof else ""))
+        print("fx=%.2f fy=%.2f cx=%.2f cy=%.2f (image %dx%d)"
+              % (prof["fx"], prof["fy"], prof["cx"], prof["cy"], image_size[0], image_size[1]))
+        print("field of view %.1f x %.1f deg (diagonal %.1f)" % (s["hfov"], s["vfov"], s["dfov"]))
+        if "undistorted" in s:
+            print("undistorted pinhole (what VGGT sees): %.1f x %.1f deg, fx %.1f px"
+                  % (s["undistorted"]["hfov"], s["undistorted"]["vfov"], s["undistorted"]["fx"]))
+        if os.path.exists(args.out):
+            shutil.copy(args.out, args.out + ".bak")
+            print("backed up existing %s -> %s.bak" % (args.out, args.out))
+        with open(args.out, "w") as f:
+            json.dump(prof, f, indent=2)
+        print("wrote %s" % args.out)
+        return
 
     rms, K, dist, rvecs, tvecs = cv2.calibrateCamera(
         objpoints, imgpoints, image_size, None, None)

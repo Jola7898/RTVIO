@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.location.Location
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -21,11 +22,15 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import com.rtvio.mapper.BuildConfig
 import com.rtvio.mapper.capture.CameraCapture
+import com.rtvio.mapper.capture.LocalSessionRecorder
+import com.rtvio.mapper.data.CameraIntrinsics
+import com.rtvio.mapper.data.LocalSessions
 import com.rtvio.mapper.data.SettingsManager
 import com.rtvio.mapper.data.cameraIntrinsicsForOutput
 import com.rtvio.mapper.net.ConnectionInfo
 import com.rtvio.mapper.net.ConnectionState
 import com.rtvio.mapper.net.FrameSpool
+import com.rtvio.mapper.net.ImuSample
 import com.rtvio.mapper.net.StreamClient
 import com.rtvio.mapper.sensors.GpsCollector
 import com.rtvio.mapper.sensors.SensorDataCollector
@@ -110,6 +115,19 @@ class StreamingSession(
     /** True from CONNECT until DISCONNECT. */
     val isStreaming: Boolean get() = _state.value != LinkState.OFF
 
+    @Volatile private var localRecorder: LocalSessionRecorder? = null
+    private var localScope: CoroutineScope? = null
+    private val _localRecording = MutableStateFlow(false)
+    val localRecording: StateFlow<Boolean> = _localRecording.asStateFlow()
+    val isLocalRecording: Boolean get() = localRecorder != null
+    /** True whenever the camera/sensors must stay bound: connected to the
+     *  desktop, or recording fully offline to phone storage. */
+    val isCapturing: Boolean get() = isStreaming || isLocalRecording
+    @Volatile var localSessionId: String? = null
+        private set
+    @Volatile var localRecordingStartedAtMs = 0L
+        private set
+
     @Volatile var sessionId: String? = null
         private set
     @Volatile var recordingStartedAtMs = 0L
@@ -176,6 +194,10 @@ class StreamingSession(
     }
 
     private fun onFrame(bytes: ByteArray, length: Int, w: Int, h: Int, timestampMs: Long) {
+        localRecorder?.let {
+            it.onFrame(bytes, length, timestampMs)
+            return
+        }
         // offerFrame serialises synchronously, so the encoder's reusable
         // buffer can be handed over as-is.
         when (_state.value) {
@@ -204,6 +226,7 @@ class StreamingSession(
      */
     fun start(owner: LifecycleOwner, previewView: PreviewView): String? {
         if (_state.value != LinkState.OFF) return null
+        if (localRecorder != null) return "Stop local recording first"
         val host = settings.serverIp
         if (host.isEmpty()) return "Set a server IP in Settings first"
 
@@ -403,25 +426,27 @@ class StreamingSession(
         sendStatus()
     }
 
-    private fun startSensors(imuWanted: Boolean, gpsWanted: Boolean) {
+    private fun startSensors(
+        imuWanted: Boolean,
+        gpsWanted: Boolean,
+        onImu: (List<ImuSample>) -> Unit = { batch ->
+            if (_state.value != LinkState.STREAMING || _wifiConnected.value) client.offerImuBatch(batch)
+        },
+        onGps: (Location) -> Unit = { fix ->
+            client.offerGps(
+                timestampMs = fix.time,
+                latitude = fix.latitude,
+                longitude = fix.longitude,
+                altitudeM = fix.altitude.toFloat(),
+                accuracyM = if (fix.hasAccuracy()) fix.accuracy else -1f
+            )
+        }
+    ) {
         if (imuWanted && imu.hasAccelerometer) {
-            imu.start(settings.imuRateHz, settings.imuBatchIntervalMs) { batch ->
-                if (_state.value != LinkState.STREAMING || _wifiConnected.value) client.offerImuBatch(batch)
-            }
+            imu.start(settings.imuRateHz, settings.imuBatchIntervalMs, onImu)
         }
         if (gpsWanted) {
-            gps.start(
-                onFix = { fix ->
-                    client.offerGps(
-                        timestampMs = fix.time,
-                        latitude = fix.latitude,
-                        longitude = fix.longitude,
-                        altitudeM = fix.altitude.toFloat(),
-                        accuracyM = if (fix.hasAccuracy()) fix.accuracy else -1f
-                    )
-                },
-                onStatus = { _events.tryEmit(it) }
-            )
+            gps.start(onFix = onGps, onStatus = { _events.tryEmit(it) })
         }
     }
 
@@ -503,31 +528,106 @@ class StreamingSession(
     }
 
     private fun sendIntrinsics() {
-        val cam = camera ?: return
-        val buffer = cam.activeResolution ?: return
-        if (cam.outputSize == null || !client.connection.value.remoteControl) return
-        try {
+        if (!client.connection.value.remoteControl) return
+        val k = computeIntrinsics() ?: return
+        client.offerIntrinsics(
+            fxPix = k.fx_pix.toFloat(), fyPix = k.fy_pix.toFloat(),
+            cxPix = k.cx_pix.toFloat(), cyPix = k.cy_pix.toFloat(),
+            k1 = k.k1, k2 = k.k2, p1 = k.p1, p2 = k.p2, k3 = k.k3, source = k.source
+        )
+        intrinsicsSent = true
+    }
+
+    /** Null until the camera has produced at least one frame (outputSize is set then). */
+    private fun computeIntrinsics(): CameraIntrinsics? {
+        val cam = camera ?: return null
+        val buffer = cam.activeResolution ?: return null
+        if (cam.outputSize == null) return null
+        return try {
             val cm = appContext.getSystemService(Context.CAMERA_SERVICE) as CameraManager
             val id = cm.cameraIdList.firstOrNull {
                 cm.getCameraCharacteristics(it)
                     .get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK
-            } ?: cm.cameraIdList.firstOrNull() ?: return
-            val k = cameraIntrinsicsForOutput(
-                cm.getCameraCharacteristics(id), buffer.width, buffer.height, cam.rotationDegrees
-            )
-            client.offerIntrinsics(
-                fxPix = k.fx_pix.toFloat(), fyPix = k.fy_pix.toFloat(),
-                cxPix = k.cx_pix.toFloat(), cyPix = k.cy_pix.toFloat(),
-                k1 = k.k1, k2 = k.k2, p1 = k.p1, p2 = k.p2, k3 = k.k3, source = k.source
-            )
-            intrinsicsSent = true
+            } ?: cm.cameraIdList.firstOrNull() ?: return null
+            cameraIntrinsicsForOutput(cm.getCameraCharacteristics(id), buffer.width, buffer.height, cam.rotationDegrees)
         } catch (e: Exception) {
             Log.w(TAG, "could not extract camera intrinsics", e)
+            null
         }
     }
 
     private fun newSessionId(): String =
         SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+
+    // ------------------------------------------------------ local recording
+
+    /**
+     * Starts capturing straight to phone storage, no socket involved at all -
+     * for a flight with no desktop in reach. Mutually exclusive with a
+     * network connection: the camera and sensors have one owner at a time.
+     *
+     * @return an error string if it could not start, null on success.
+     */
+    fun startLocalRecording(owner: LifecycleOwner, previewView: PreviewView): String? {
+        if (localRecorder != null) return null
+        if (_state.value != LinkState.OFF) return "Stop the current connection first"
+
+        val id = newSessionId()
+        val dir = File(LocalSessions.rootDir(appContext), id)
+        val rec = try {
+            LocalSessionRecorder(dir)
+        } catch (e: Exception) {
+            return "Could not start local recording: ${e.message}"
+        }
+        localRecorder = rec
+        localSessionId = id
+        localRecordingStartedAtMs = System.currentTimeMillis()
+
+        if (camera == null) startPreview(owner, previewView)
+        camera?.resetCounters()
+        camera?.streaming = true
+        startSensors(
+            imuWanted = true,
+            gpsWanted = settings.outdoorMode,
+            onImu = { batch -> rec.onImuBatch(batch) },
+            onGps = { fix -> rec.onGpsFix(fix) }
+        )
+
+        // Camera characteristics are not resolved until the first frame sets
+        // outputSize, so this is retried for a few seconds rather than tried once.
+        val s = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        localScope = s
+        s.launch {
+            var sent = false
+            while (isActive && !sent) {
+                computeIntrinsics()?.let { rec.setIntrinsics(it); sent = true }
+                delay(500)
+            }
+        }
+
+        _localRecording.value = true
+        _events.tryEmit("Recording locally: $id")
+        StreamingForegroundService.start(
+            appContext, needsLocation = settings.outdoorMode, keepAwake = settings.keepAwake
+        )
+        return null
+    }
+
+    /** Stops local recording, writes the session's JSON sidecars, and returns the tally. */
+    fun stopLocalRecording(): LocalSessionRecorder.Summary? {
+        val rec = localRecorder ?: return null
+        camera?.streaming = false
+        stopSensors()
+        localScope?.cancel()
+        localScope = null
+        val summary = rec.finish(cameraFps)
+        localRecorder = null
+        localSessionId = null
+        _localRecording.value = false
+        _events.tryEmit("Saved locally: ${summary.frames} frames, ${summary.imuSamples} imu, ${summary.gpsFixes} gps")
+        StreamingForegroundService.stop(appContext)
+        return summary
+    }
 
     // ----------------------------------------------------------- disconnect
 

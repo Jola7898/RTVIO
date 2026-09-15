@@ -3,3 +3,14 @@
 # working WSL2 setup + adapter scaffold if the LingBot-Map direction is revisited,
 # but not the chosen path going forward.
 /rtviomap/
+
+# Screenshots and presentation exports dropped at the repo root - not source.
+/image*.png
+/ppt_flowcharts/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
