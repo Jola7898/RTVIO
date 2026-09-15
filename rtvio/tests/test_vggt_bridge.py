@@ -9,7 +9,7 @@ forward pass: that needs a GPU + the 5GB checkpoint and takes 1-2+ minutes,
 which doesn't belong in a routine test run. The real end-to-end proof (a
 genuine VGGT reconstruction from a phone-shaped session fixture, correctly
 skipping a dropped frame and consuming its GPS directly) was run manually
-and is documented in HANDOFF_SESSION3.md; this file guards the fast, always-
+and is documented in docs/dev_notes/HANDOFF_SESSION3.md; this file guards the fast, always-
 exercisable part of that path against regressions.
 
     python tests/test_vggt_bridge.py

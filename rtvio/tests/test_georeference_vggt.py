@@ -3,7 +3,7 @@ Regression + robustness test for so3.umeyama_alignment, the per-window
 georeferencing fit at the heart of vggt_reconstruct.py's GPS mode.
 
 No committed test existed for this at all before this session - the
-"verified exact to float precision" claim in HANDOFF_SESSION1.md was an ad
+"verified exact to float precision" claim in docs/dev_notes/HANDOFF_SESSION1.md was an ad
 hoc script, not a committed test, and it only ever checked the noiseless
 case. SIH26158 key challenge (v) is explicitly "GPS inaccuracies and sensor
 noise"; this file adds that missing coverage: an exact regression test for

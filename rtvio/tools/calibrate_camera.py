@@ -3,12 +3,13 @@
 Checkerboard camera calibration -> camera_intrinsics.json, at whatever
 resolution the input images actually are.
 
-INTEGRATION.md section 4.5 is explicit that the shipped camera_intrinsics.json
-is a nominal synthetic pinhole and must be replaced with a real OpenCV
-calibration done at the exact resolution the phone streams. This is that
-calibration step. Feed it images from tools/capture_calibration_frames.py (or
-any set of checkerboard photos taken at the same resolution and with the same
-lens/focus settings as the live stream).
+The shipped data/camera_intrinsics.json is a nominal synthetic pinhole and is
+only a fallback (the phone now sends its own real intrinsics automatically -
+see docs/CAMERA_INTRINSICS_INTEGRATION.md); this tool produces a real OpenCV
+calibration for when that auto-discovery isn't available. Feed it images from
+tools/capture_calibration_frames.py (or any set of checkerboard photos taken
+at the same resolution and with the same lens/focus settings as the live
+stream).
 
 Usage:
     python tools/calibrate_camera.py --images data/calib_frames --board-cols 9 \\

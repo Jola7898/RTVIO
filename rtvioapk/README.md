@@ -135,7 +135,7 @@ on localhost and fails the moment a real 200 KB frame crosses WiFi.
 ## Integrating with the reconstruction pipeline
 
 If you are wiring this stream into the Python pipeline in `rtvio/`, read
-`../INTEGRATION.md` first. It maps every packet field onto the pipeline's
+`../rtvio/docs/INTEGRATION.md` first. It maps every packet field onto the pipeline's
 on-disk schema and documents the seven mismatches between the two — several of
 which fail silently rather than raising.
 

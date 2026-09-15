@@ -3,7 +3,7 @@
 ## Setup
 
 ```powershell
-cd C:\Users\HP\Desktop\RTVIO\rtvio
+cd rtvio
 python -m pip install -e .
 ```
 

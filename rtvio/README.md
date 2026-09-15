@@ -86,13 +86,16 @@ for the full workflow (starting the receiver, the three-lane architecture,
 replay for debugging).
 
 ```powershell
-cd C:\Users\HP\Desktop\RTVIO\rtvio
+cd rtvio
 python -m pip install -e .                 # once, so `rtvio` is importable
 
 python tests/test_geometry.py              # 9 regression tests, ~2 seconds
 python tests/test_stream.py                # 18 acceptance checks, ~2 seconds
 python tests/test_relative_reinit.py       # 6 two-view reinit checks, ~1 second
 python tests/test_pose_pipeline.py         # 18 gyro/attitude/GPS-reanchor checks, ~1 second
+python tests/test_fusion.py                # window-alignment + PLY-writer checks, CPU-only
+python tests/test_vggt_bridge.py           # phone-recording -> VGGT bridge checks, CPU-only
+python tests/test_georeference_vggt.py     # GPS-noise Monte-Carlo sweep vs the 1m target, CPU-only
 
 # point the phone app's "Server IP" at this host, then:
 python -u -m rtvio.live_pipeline --port 5555 --run-id NAME

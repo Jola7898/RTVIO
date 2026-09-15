@@ -20,7 +20,7 @@ class DynamicMasker:
     is True.
 
     Two model/class-list presets (session 2+3 finding - see
-    HANDOFF_SESSION2.md/3.md): stock COCO-trained yolov8n-seg (this class's
+    docs/dev_notes/HANDOFF_SESSION2.md/3.md): stock COCO-trained yolov8n-seg (this class's
     default, unchanged) detects essentially NOTHING on nadir (straight-down)
     drone footage - confirmed on a real frame with 3 visible parked cars, 0
     detections at any confidence/resolution tested. A car viewed from
@@ -70,7 +70,7 @@ class DynamicMasker:
         # Stock COCO models default to ultralytics' own imgsz=640. The
         # VisDrone checkpoint's detections on a 3840x2160 nadir frame went
         # from 2 boxes at 640 to 8 at 1280 (confirmed - see
-        # HANDOFF_SESSION3.md) since cars are small in a wide aerial frame;
+        # docs/dev_notes/HANDOFF_SESSION3.md) since cars are small in a wide aerial frame;
         # for_nadir_aerial() below sets this to 1280 by default.
         self.imgsz = imgsz
         if self.enabled:

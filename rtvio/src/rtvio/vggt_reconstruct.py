@@ -37,7 +37,7 @@ WHAT HAPPENS
 
 GPS is off unless --gps-mode global: then every frame with a fix becomes an
 anchor for ONE similarity fit of the whole trajectory (hundreds of anchors
-instead of the old 3-4 per window - see HANDOFF_SESSION3.md item 3 on why
+instead of the old 3-4 per window - see docs/dev_notes/HANDOFF_SESSION3.md item 3 on why
 per-window fits could not reach the accuracy target).
 """
 import argparse

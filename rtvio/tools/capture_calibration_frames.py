@@ -6,7 +6,8 @@ streaming resolution, for tools/calibrate_camera.py.
 WHY THIS EXISTS
 
 camera_intrinsics.json must describe the exact width/height the phone streams
-(INTEGRATION.md section 4.5) - live_pipeline.py hard-fails rather than guess
+(see docs/CAMERA_INTRINSICS_INTEGRATION.md for the auto-discovery path this
+is a fallback for) - live_pipeline.py hard-fails rather than guess
 if they don't match, because fx/fy/cx/cy are in pixels and a resolution
 mismatch silently rescales the whole reconstruction. The phone's actual
 output size is a CameraX ResolutionStrategy decision made on-device
